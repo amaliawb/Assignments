@@ -58,4 +58,4 @@ Hi there
 
 because "Hello World" is outdated :)
 
-9. I asked chat to help with formatting this file and he mentioned I can 
+9. I asked chat to help with formatting this file and he mentioned I can create a .gitignore to ignore DS_store which is a mac file that doesnt need to be on my github apparently
