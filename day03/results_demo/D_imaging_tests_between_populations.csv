@@ -1,0 +1,13 @@
+feature,test,comparison,statistic,p_value,median_group1,median_group2,q_value_fdr,significant
+Area (LightLoss),Kruskal-Wallis,Immune vs Epithelial vs Proximal tubule,12.5,0.0019304541362277095,,,0.010382034243744762,True
+Area (LightLoss),Mann-Whitney U,Immune vs Epithelial,0.0,0.007936507936507936,87.371,310.422,0.010382034243744762,True
+Area (LightLoss),Mann-Whitney U,Immune vs Proximal tubule,0.0,0.007936507936507936,87.371,239.09,0.010382034243744762,True
+Area (LightLoss),Mann-Whitney U,Epithelial vs Proximal tubule,25.0,0.007936507936507936,310.422,239.09,0.010382034243744762,True
+Eccentricity (LightLoss),Kruskal-Wallis,Immune vs Epithelial vs Proximal tubule,9.5,0.008651695203120634,,,0.010382034243744762,True
+Eccentricity (LightLoss),Mann-Whitney U,Immune vs Epithelial,0.0,0.007936507936507936,0.308,0.59,0.010382034243744762,True
+Eccentricity (LightLoss),Mann-Whitney U,Immune vs Proximal tubule,0.0,0.007936507936507936,0.308,0.584,0.010382034243744762,True
+Eccentricity (LightLoss),Mann-Whitney U,Epithelial vs Proximal tubule,15.0,0.6904761904761905,0.59,0.584,0.6904761904761904,False
+Radial Moment (LightLoss),Kruskal-Wallis,Immune vs Epithelial vs Proximal tubule,11.579999999999998,0.0030579821764233103,,,0.010382034243744762,True
+Radial Moment (LightLoss),Mann-Whitney U,Immune vs Epithelial,0.0,0.007936507936507936,4.342,9.343,0.010382034243744762,True
+Radial Moment (LightLoss),Mann-Whitney U,Immune vs Proximal tubule,0.0,0.007936507936507936,4.342,8.329,0.010382034243744762,True
+Radial Moment (LightLoss),Mann-Whitney U,Epithelial vs Proximal tubule,23.0,0.031746031746031744,9.343,8.329,0.03463203463203463,True

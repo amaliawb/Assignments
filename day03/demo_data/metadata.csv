@@ -1,0 +1,11 @@
+sample_id,facs_name,condition,flex_probe_barcode
+S01,S01_urine.fcs,Healthy,BC001
+S02,S02_urine.fcs,Healthy,BC002
+S03,S03_urine.fcs,Healthy,BC003
+S04,S04_urine.fcs,Healthy,BC004
+S05,S05_urine.fcs,Healthy,BC005
+S06,S06_urine.fcs,Disease,BC006
+S07,S07_urine.fcs,Disease,BC007
+S08,S08_urine.fcs,Disease,BC008
+S09,S09_urine.fcs,Disease,BC009
+S10,S10_urine.fcs,Disease,BC010

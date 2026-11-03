@@ -1,0 +1,46 @@
+sample_id,population,feature,value,condition
+S06,Immune,Area (LightLoss),98.772,Disease
+S07,Immune,Area (LightLoss),87.371,Disease
+S08,Immune,Area (LightLoss),81.018,Disease
+S09,Immune,Area (LightLoss),99.171,Disease
+S10,Immune,Area (LightLoss),83.497,Disease
+S06,Immune,Eccentricity (LightLoss),0.277,Disease
+S07,Immune,Eccentricity (LightLoss),0.315,Disease
+S08,Immune,Eccentricity (LightLoss),0.285,Disease
+S09,Immune,Eccentricity (LightLoss),0.308,Disease
+S10,Immune,Eccentricity (LightLoss),0.311,Disease
+S06,Immune,Radial Moment (LightLoss),4.436,Disease
+S07,Immune,Radial Moment (LightLoss),4.342,Disease
+S08,Immune,Radial Moment (LightLoss),3.681,Disease
+S09,Immune,Radial Moment (LightLoss),4.289,Disease
+S10,Immune,Radial Moment (LightLoss),4.397,Disease
+S06,Epithelial,Area (LightLoss),305.479,Disease
+S07,Epithelial,Area (LightLoss),322.202,Disease
+S08,Epithelial,Area (LightLoss),374.682,Disease
+S09,Epithelial,Area (LightLoss),310.422,Disease
+S10,Epithelial,Area (LightLoss),291.457,Disease
+S06,Epithelial,Eccentricity (LightLoss),0.671,Disease
+S07,Epithelial,Eccentricity (LightLoss),0.531,Disease
+S08,Epithelial,Eccentricity (LightLoss),0.59,Disease
+S09,Epithelial,Eccentricity (LightLoss),0.567,Disease
+S10,Epithelial,Eccentricity (LightLoss),0.608,Disease
+S06,Epithelial,Radial Moment (LightLoss),10.023,Disease
+S07,Epithelial,Radial Moment (LightLoss),8.649,Disease
+S08,Epithelial,Radial Moment (LightLoss),9.489,Disease
+S09,Epithelial,Radial Moment (LightLoss),9.343,Disease
+S10,Epithelial,Radial Moment (LightLoss),8.576,Disease
+S06,Proximal tubule,Area (LightLoss),228.296,Disease
+S07,Proximal tubule,Area (LightLoss),250.642,Disease
+S08,Proximal tubule,Area (LightLoss),256.413,Disease
+S09,Proximal tubule,Area (LightLoss),239.09,Disease
+S10,Proximal tubule,Area (LightLoss),227.496,Disease
+S06,Proximal tubule,Eccentricity (LightLoss),0.565,Disease
+S07,Proximal tubule,Eccentricity (LightLoss),0.544,Disease
+S08,Proximal tubule,Eccentricity (LightLoss),0.632,Disease
+S09,Proximal tubule,Eccentricity (LightLoss),0.588,Disease
+S10,Proximal tubule,Eccentricity (LightLoss),0.584,Disease
+S06,Proximal tubule,Radial Moment (LightLoss),8.329,Disease
+S07,Proximal tubule,Radial Moment (LightLoss),8.567,Disease
+S08,Proximal tubule,Radial Moment (LightLoss),9.19,Disease
+S09,Proximal tubule,Radial Moment (LightLoss),8.257,Disease
+S10,Proximal tubule,Radial Moment (LightLoss),8.225,Disease
