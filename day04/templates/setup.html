@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>2. Choose the conditions</h1>
+  <p>The sample sheet has {{ n_samples }} samples. Pick the column that holds the conditions,
+     then tick the conditions to compare. Ticking none includes all of them.</p>
+  {% if error %}<pre class="alert">{{ error }}</pre>{% endif %}
+
+  <form action="{{ url_for('analyse', run_id=run_id) }}" method="post">
+    <h3>Condition column</h3>
+    {% for option in options %}
+    <label class="inline"><input type="radio" name="condition_column" value="{{ option.column }}"
+           {% if loop.first %}checked{% endif %}> {{ option.column }}</label>
+    {% endfor %}
+
+    <h3>Conditions to include</h3>
+    {% for option in options %}
+    <fieldset class="conditions" data-column="{{ option.column }}" {% if not loop.first %}disabled hidden{% endif %}>
+      {% for value, count in option["values"] %}
+      <label class="inline"><input type="checkbox" name="conditions" value="{{ value }}" checked>
+             {{ value }} <span class="muted">({{ count }} samples)</span></label>
+      {% endfor %}
+    </fieldset>
+    {% endfor %}
+
+    <button type="submit">Run analysis</button>
+  </form>
+</section>
+
+<script>
+  // Show only the conditions of the selected column. A disabled fieldset is not
+  // sent with the form, so values from other columns are never submitted.
+  document.querySelectorAll('input[name="condition_column"]').forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      document.querySelectorAll('fieldset.conditions').forEach(function (set) {
+        var active = set.dataset.column === radio.value;
+        set.disabled = !active;
+        set.hidden = !active;
+      });
+    });
+  });
+</script>
+{% endblock %}

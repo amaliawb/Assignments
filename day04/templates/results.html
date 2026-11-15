@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Results · FACS vs scRNA-seq{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>3. Results</h1>
+  <p>Column <b>{{ info.condition_column }}</b> with conditions <b>{{ info.conditions | join(", ") }}</b> ·
+     {{ info.n_facs_samples }} FACS samples · {{ info.n_cells }} cells from {{ info.n_seq_samples }} scRNA-seq samples ·
+     {{ n_significant }} significant condition differences in proportions (FDR &lt; {{ alpha }})</p>
+  <p class="actions">
+    <a class="button" href="{{ url_for('download_all', run_id=run_id) }}">Download all results (.zip)</a>
+    <a class="button secondary" href="{{ url_for('setup', run_id=run_id) }}">Change conditions</a>
+    <a class="button secondary" href="{{ url_for('index') }}">New analysis</a>
+  </p>
+  {% if info.log %}
+  <details><summary>Messages from the analysis</summary><pre>{{ info.log }}</pre></details>
+  {% endif %}
+</section>
+
+{% for section in sections %}
+<section class="card">
+  <h2>{{ section.title }}</h2>
+  {% if section.table %}
+    <div class="table-wrap">{{ section.table | safe }}</div>
+  {% elif section.letter == "B" %}
+    <p class="muted">No tests between conditions. This needs at least two conditions, each with at least the minimum number of samples.</p>
+  {% endif %}
+  {% for plot in section.plots %}
+    <a href="{{ url_for('result_file', run_id=run_id, name=plot) }}" target="_blank">
+      <img src="{{ url_for('result_file', run_id=run_id, name=plot) }}" alt="{{ plot }}"></a>
+  {% endfor %}
+  {% if section.csvs %}
+  <p class="files">Tables:
+    {% for csv in section.csvs %}<a href="{{ url_for('result_file', run_id=run_id, name=csv) }}">{{ csv }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

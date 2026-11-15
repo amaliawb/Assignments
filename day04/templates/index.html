@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>1. Upload your data</h1>
+  <p>The three files from the same samples. The script's comments describe each format.</p>
+  <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+    <label>Sample sheet <code>{{ uploads.metadata[0] }}</code>
+      <input type="file" name="metadata" accept=".csv" required></label>
+    <label>FlowJo export <code>{{ uploads.facs[0] }}</code>
+      <input type="file" name="facs" accept=".xlsx" required></label>
+    <label>scRNA-seq cells <code>{{ uploads.seq[0] }}</code>
+      <input type="file" name="seq" accept=".csv" required></label>
+    <button type="submit">Upload and continue</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>No data yet?</h2>
+  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease) and analyse that instead.</p>
+  <form action="{{ url_for('upload') }}" method="post">
+    <button type="submit" name="demo" value="1" class="secondary">Use demo data</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Current settings</h2>
+  <p>These come from the SETTINGS section of <code>facs_vs_scrnaseq.py</code>. Edit them there and restart the app.</p>
+  <table class="data">
+    <tr><th>Population</th><th>FlowJo gate</th><th>scRNA-seq labels</th></tr>
+    {% for name, info in analysis.POPULATIONS.items() %}
+    <tr><td>{{ name }}</td><td><code>{{ info.gate }}</code></td><td>{{ info.seq_labels | join(", ") }}</td></tr>
+    {% endfor %}
+  </table>
+  <table class="data">
+    <tr><th>Marker</th><th>Gene</th><th>FlowJo channel</th></tr>
+    {% for name, info in analysis.MARKERS.items() %}
+    <tr><td>{{ name }}</td><td><i>{{ info.gene }}</i></td><td><code>{{ info.facs_parameter }}</code></td></tr>
+    {% endfor %}
+  </table>
+  <p>Imaging features: {% for f in analysis.IMAGING_FEATURES %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %}<br>
+     Proportion denominator: <code>{{ analysis.PROPORTION_DENOMINATOR }}</code> ·
+     minimum samples per group: {{ analysis.MIN_SAMPLES_PER_GROUP }} ·
+     FDR threshold: {{ analysis.ALPHA }}</p>
+</section>
+{% endblock %}
