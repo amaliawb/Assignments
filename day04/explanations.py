@@ -107,6 +107,23 @@ SECTION_HELP = {
             "small differences are expected. Look for large, consistent ones.",
         ],
     },
+    "F": {
+        "question": "What does each cell type look like in the S8 images - its typical size, shape "
+                    "and texture - and which samples or cells are unusual?",
+        "notes": [
+            "The S8 images give morphological features (size, shape, how the signal is spread). "
+            "They describe what cells look like, not their physiology; for that, add functional dyes.",
+            "F1-F5 use the FlowJo table: one MEDIAN per sample and population. F6-F8 need the optional "
+            "single-cell imaging export and show the individual cells.",
+            "Outliers are found with a robust z-score: how many 'typical spreads' (based on the median "
+            "and MAD) a value is away from the median. Above 3.5 counts as an outlier. Unlike a normal "
+            "z-score, extreme values cannot hide themselves by inflating the spread.",
+            "An outlier is not automatically an error: check it. Common causes are a staining or "
+            "acquisition problem, a gating problem, debris, doublets or clumps, or real biology.",
+            "Sample outliers are found among all samples of a population together. A whole condition "
+            "that is shifted (e.g. all Disease samples) is shown in section D, not as outliers here.",
+        ],
+    },
 }
 
 # -----------------------------------------------------------------------------
@@ -135,13 +152,23 @@ COLUMN_HELP = {
     "q_value_fdr": "p-value corrected for all tests in this table. Use this one.",
     "significant": "True if q_value_fdr is below 0.05.",
     "group": "The condition of our samples that is compared with the atlas.",
-    "n_samples": "Number of our samples in this group.",
+    "n_samples": "Number of our samples used (in section E: in this condition).",
     "median_samples": "Median proportion of this population in our samples (this method and condition).",
     "atlas_proportion": "Proportion of this population in the atlas, with all atlas cells pooled.",
     "difference": "median_samples minus atlas_proportion. Positive = our samples have MORE of this "
                   "population than the atlas; 0.05 = 5 percentage points.",
     "n_atlas_donors": "Number of atlas donors. With 3 or more, our samples are tested against the "
                       "spread between donors; otherwise against the single pooled atlas proportion.",
+    "mean": "Average of the sample medians (the bar height in F1).",
+    "sd": "Standard deviation: how much the samples differ from each other.",
+    "ci95_low": "Lower end of the 95% confidence interval of the mean: the true average is very likely "
+                "above this.",
+    "ci95_high": "Upper end of the 95% confidence interval of the mean. A narrow interval = a precise estimate.",
+    "median": "The middle value of the samples.",
+    "cv_percent": "Coefficient of variation: SD as a % of the mean. Lets you compare spread between "
+                  "features with different units. Below ~10% = samples are very consistent.",
+    "n_outlier_samples": "How many samples are outliers for this population and feature (robust z > 3.5). "
+                         "They are named in plot F1 and shown in F4.",
 }
 
 # -----------------------------------------------------------------------------
@@ -267,5 +294,100 @@ PLOT_HELP = {
                    "cell types, which supports the gating and the annotation. A correlation close to 1 "
                    "means the patterns match. A marker that is dark in a different population than in "
                    "the atlas points to a gating or annotation problem.",
+    },
+    "F1_imaging_feature_means.png": {
+        "title": "Mean imaging features per cell type",
+        "how": [
+            "One panel per imaging feature; one bar per population (all chosen samples together).",
+            "Bar height = mean of the sample medians. Error bar = 95% confidence interval of that mean.",
+            "Each dot is one sample. A red ring and a name mark an outlier sample (robust z > 3.5).",
+        ],
+        "meaning": "Shows the typical size, shape and texture of each cell type, and how much samples vary. "
+                   "Non-overlapping error bars mean the populations clearly differ for that feature. A "
+                   "ringed sample is unusual for that population: check its gating and image quality.",
+    },
+    "F2_imaging_fingerprint.png": {
+        "title": "Imaging fingerprint of each cell type",
+        "how": [
+            "Rows = populations, columns = imaging features. The number in each cell is the mean value.",
+            "The color compares the populations within each column: red = higher than the other "
+            "populations, blue = lower, white = average (z-score per feature).",
+        ],
+        "meaning": "Each row is a population's 'morphological fingerprint'. Read across a row to describe "
+                   "a cell type (e.g. large, elongated, spread-out signal). Two rows with similar colors "
+                   "look alike in the images; very different rows can be told apart by imaging alone.",
+    },
+    "F3_imaging_pca.png": {
+        "title": "Imaging map (PCA)",
+        "how": [
+            "Each point is one sample x one population, placed by ALL its imaging features at once "
+            "(principal component analysis). Color = population, shape = condition.",
+            "Points close together look alike in the images. The axis labels say how much of the "
+            "differences each axis captures.",
+            "Arrows show the direction in which each feature increases. Arrows pointing the same way "
+            "= features that carry similar information.",
+        ],
+        "meaning": "Separate color clouds mean the cell types can be told apart by morphology alone, a "
+                   "label-free check of the gating. Shapes of one condition shifted within a color cloud "
+                   "mean the condition changes that cell type's morphology. A lone point far from its "
+                   "color is an unusual sample.",
+    },
+    "F4_imaging_outlier_samples.png": {
+        "title": "Outlier samples (robust z-score)",
+        "how": [
+            "Rows = samples (with their condition), columns = population x feature.",
+            "Color = robust z-score of the sample's median compared with all samples of that population: "
+            "red = higher than usual, blue = lower, white = typical.",
+            "Cells with |z| > 3.5 are outliers and show their z-value.",
+        ],
+        "meaning": "A row with many dark cells is a sample that looks unusual overall (e.g. an acquisition or "
+                   "staining problem). One dark cell is a single unusual population x feature. Check the "
+                   "images of that sample before excluding anything.",
+    },
+    "F5_imaging_vs_markers.png": {
+        "title": "Imaging features vs marker intensity",
+        "how": [
+            "One heatmap per population. Rows = imaging features, columns = FACS markers.",
+            "Each number is the Spearman correlation across samples between the feature and the marker's "
+            "median intensity, within that population. Red = they rise together, blue = one rises as the "
+            "other falls. * = significant after FDR correction.",
+        ],
+        "meaning": "Links shape to marker expression, e.g. whether samples with larger proximal tubule cells "
+                   "also have brighter CD13. With few samples, correlations are uncertain; trust only strong, "
+                   "starred ones. Larger cells can also look brighter simply because they are bigger.",
+    },
+    "F6_imaging_cell_distributions.png": {
+        "title": "Distribution of single cells per cell type",
+        "how": [
+            "One panel per feature. Each violin shows ALL single cells of a population (all chosen samples).",
+            "The width shows how many cells have that value; the black line is the median.",
+            "Long thin tails are rare cells with extreme values.",
+        ],
+        "meaning": "Shows the full spread of cells, not just the sample medians. A violin with two bulges "
+                   "means the population contains two kinds of cells (e.g. two subtypes, or cells and "
+                   "doublets), which may be worth gating separately.",
+    },
+    "F7_imaging_cell_outliers.png": {
+        "title": "% outlier cells per sample",
+        "how": [
+            "One panel per feature, plus 'Any feature' (outlier in at least one feature).",
+            "Each dot is one sample: the % of its cells in that population with a robust z > 3.5 compared "
+            "with all cells of that population.",
+            "With normally spread data, only a few % of cells should be outliers.",
+        ],
+        "meaning": "A sample with a much higher % than the others has many unusual cells: possible doublets "
+                   "or clumps (often large area), debris (small area), damaged cells, or a real biological "
+                   "change. Look at that sample's images.",
+    },
+    "F8_imaging_morphology_map.png": {
+        "title": "Morphology map of single cells",
+        "how": [
+            "Each dot is one cell, placed by the first two imaging features (x and y). One panel per "
+            "condition; color = population; at most 4000 cells are drawn per panel.",
+            "Black crosses are outlier cells (robust z > 3.5 in any feature).",
+        ],
+        "meaning": "Shows whether the populations occupy different regions of 'shape space' and how much they "
+                   "overlap. Outlier cells far from every cloud are likely doublets, clumps or debris. "
+                   "Compare panels to see a condition shifting cells to a new region.",
     },
 }

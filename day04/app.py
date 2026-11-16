@@ -6,7 +6,8 @@ Web interface for facs_vs_scrnaseq.py.
 
 All the "business logic" (loading the files, building the tables, the
 statistics and the plots) stays in facs_vs_scrnaseq.py. This file only:
-  1. receives the three input files (+ an optional reference atlas) through an
+  1. receives the three input files (+ the optional reference atlas and per-cell
+     imaging export) through an
      upload form (or makes demo data)
   2. lets you pick the condition column and conditions with checkboxes
      (instead of typing numbers in the terminal)
@@ -56,15 +57,17 @@ APP_DIR = Path(__file__).resolve().parent
 RUNS_DIR = APP_DIR / "runs"           # one sub-folder per analysis
 MAX_UPLOAD_MB = 500                   # largest total upload accepted
 
-# The upload fields (three required + the optional atlas): form field name -> (file name the analysis expects, allowed extension)
+# The upload fields (three required + two optional): form field name -> (file name the analysis expects, allowed extension)
 UPLOADS = {
     "metadata": (analysis.METADATA_FILE, ".csv"),
     "facs": (analysis.FACS_FILE, ".xlsx"),
     "seq": (analysis.SEQ_FILE, ".csv"),
     "atlas": (analysis.ATLAS_FILE, ".csv"),
+    "facs_cells": (analysis.FACS_CELLS_FILE, ".csv"),
 }
-# Upload fields that may be left empty (without an atlas, section E is skipped)
-OPTIONAL_UPLOADS = {"atlas"}
+# Upload fields that may be left empty: without an atlas, section E is skipped;
+# without the per-cell imaging export, the cell-level plots of section F are skipped
+OPTIONAL_UPLOADS = {"atlas", "facs_cells"}
 
 # Headings for the plots and tables, by the letter their file name starts with
 SECTIONS = {
@@ -73,6 +76,7 @@ SECTIONS = {
     "C": "C. Protein vs RNA",
     "D": "D. S8 imaging features",
     "E": "E. Comparison with the reference atlas",
+    "F": "F. Imaging profiles per cell type",
 }
 
 app = Flask(__name__)
@@ -260,6 +264,9 @@ def results(run_id):
         "E": (read_result(results_dir, "E_atlas_proportion_tests.csv"),
               ["population", "method", "group", "n_samples", "median_samples", "atlas_proportion",
                "difference", "n_atlas_donors", "test", "q_value_fdr", "significant"]),
+        "F": (read_result(results_dir, "F_imaging_population_summary.csv"),
+              ["population", "feature", "n_samples", "mean", "sd", "ci95_low", "ci95_high",
+               "median", "cv_percent", "n_outlier_samples"]),
     }
     n_significant = int(by_condition["significant"].sum()) if by_condition is not None else 0
 

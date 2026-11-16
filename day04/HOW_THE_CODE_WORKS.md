@@ -23,6 +23,7 @@ Optionally, you can add a third, independent source: a **reference single-cell a
                    check)        proportions)        and conditions)
 
  + optional atlas ──► E. load atlas ──► atlas proportions ──► compare with FACS and Flex ──► E tables + plots
+ + imaging features ─► F. imaging profiles per cell type (+ optional single-cell export) ──► F tables + plots
 ```
 
 There are two ways to use it, and both run **the same analysis code**:
@@ -188,6 +189,7 @@ These helpers are then used for the four questions of the analysis:
 | C | `protein_rna_stats` | Does antibody brightness follow RNA expression of the same gene? |
 | D | `imaging_between_populations` (+ `condition_stats`) | Do the populations look different in the images, and do the image features change between conditions? |
 | E | `atlas_comparison_stats` (+ `composition_difference`) | Do FACS and Flex look like the reference atlas? (only when an atlas is given, see below) |
+| F | `imaging_population_summary`, `imaging_outlier_samples`, `imaging_pca`, `imaging_marker_correlations` | What does each cell type look like in the images, and which samples or cells are unusual? (see below) |
 
 Writing the tests once as helpers and reusing them means every section is tested the same way. A fix in one place fixes it everywhere.
 
@@ -238,13 +240,56 @@ The steps mirror the main analysis:
 | `E2_atlas_composition_difference.png` | How far each sample's whole composition is from the atlas, compared with the atlas donors themselves |
 | `E3_atlas_marker_profiles.png` | Marker patterns as heatmaps: atlas RNA vs Flex RNA vs FACS protein (needs a per-cell atlas with gene columns) |
 
+### Imaging profiles per cell type (section F)
+
+All the section F code is in **its own block** of the file (section "4c"). It runs whenever imaging features are set in SETTINGS, and it uses the same "imaging" table that section D builds from the FlowJo export. Sections A–E don't use anything from it, so none of their results changed.
+
+**What the S8 imaging measures.** Each cell is photographed while it is sorted, and the instrument turns each image into numbers, such as size (area), shape (eccentricity) and how the signal is spread (radial moment). These describe what cells *look like* (morphology), not what they are doing (physiology). Section F collects everything these numbers can tell about each cell type.
+
+**Two levels of data:**
+- **Sample level (always):** the FlowJo table gives one **median** per sample and population, so one number summarises all the cells of a population in a sample.
+- **Cell level (optional):** if you also export the single cells (`facs_imaging_cells.csv`, one row per cell), the program can look at every cell and find unusual ones inside a sample.
+
+**Finding outliers: the robust z-score.** A normal z-score says how many standard deviations a value is from the mean. But one extreme value pulls the mean towards itself and inflates the standard deviation, so it can "hide" itself. The **robust z-score** uses the median and the *median absolute deviation* (MAD) instead, which a few extreme values can't move:
+
+```python
+0.6745 * (value - median) / MAD
+```
+
+A value with a robust z above 3.5 (`OUTLIER_CUTOFF` in SETTINGS) counts as an outlier. The function `robust_z(...)` does this calculation, and every outlier check in section F uses it.
+
+The functions, step by step:
+
+1. **`imaging_outlier_samples(...)`** gives every sample a robust z-score for each population × feature, compared with all samples of that population, and marks the outliers.
+2. **`imaging_population_summary(...)`** describes each population × feature over the samples: mean, SD, the **95% confidence interval** of the mean (the range the true average very likely lies in), median, **CV%** (spread as a % of the mean, so features with different units can be compared), min, max and the number of outlier samples.
+3. **`imaging_pca(...)`** runs a **PCA** (principal component analysis). Each sample × population is described by all its features at once, and PCA finds the two directions that capture most of the differences, so they can be drawn on a flat map. The features are first standardized, so each one counts equally.
+4. **`imaging_marker_correlations(...)`** asks, within each population and across samples, whether an imaging feature goes together with a marker's brightness (Spearman correlation, FDR-corrected).
+5. **With the single-cell file:**
+   - `load_facs_cells(...)` reads it;
+   - `cell_outlier_flags(...)` compares every cell with all cells of its population;
+   - `cell_level_summary(...)` gives, per sample × population × feature: the number of cells, mean, median, SD, CV%, the 5th and 95th percentiles, and the **% of outlier cells**.
+6. **`run_imaging_profiles(...)`** runs all of these, saves the tables and draws the plots:
+
+| File | What it shows |
+|---|---|
+| `F1_imaging_feature_means.png` | Mean of each feature per cell type with its 95% confidence interval; each sample is a dot, and outlier samples are ringed in red and named |
+| `F2_imaging_fingerprint.png` | A heatmap "fingerprint": the mean of every feature for every cell type, colored by how it compares with the other cell types |
+| `F3_imaging_pca.png` | The PCA map: do cell types separate by morphology alone? Arrows show which feature pulls in which direction |
+| `F4_imaging_outlier_samples.png` | The robust z-score of every sample × population × feature; outliers are labelled |
+| `F5_imaging_vs_markers.png` | Correlations between imaging features and marker brightness, per cell type |
+| `F6_imaging_cell_distributions.png` | *(single-cell file)* Violin plots: the shape of the distribution of all cells of each type |
+| `F7_imaging_cell_outliers.png` | *(single-cell file)* The % of unusual cells in each sample, for example doublets, clumps or debris |
+| `F8_imaging_morphology_map.png` | *(single-cell file)* Every cell as a dot on a map of the first two features, with outlier cells marked |
+
+An outlier is a reason to **look** at that sample or those cells, not an automatic reason to remove them. It can be a technical problem, but it can also be real biology.
+
 ### Demo data
 
-**`make_demo_data(...)`** writes made-up input files in exactly the right format: 10 samples (5 Healthy and 5 Disease), plus a reference atlas of 8 healthy donors. It uses random numbers with a fixed "seed", so the demo data is the same every time. This lets you test the whole program before real data exists.
+**`make_demo_data(...)`** writes made-up input files in exactly the right format: 10 samples (5 Healthy and 5 Disease), plus a reference atlas of 8 healthy donors and a single-cell imaging export (with about 2% odd cells, such as doublets, to find as outliers). It uses random numbers with a fixed "seed", so the demo data is the same every time. This lets you test the whole program before real data exists.
 
 ### Putting it together: `run_analysis(...)` and `main()`
 
-**`run_analysis(...)`** is the conductor. It calls steps 1 to 5 in order, then section E if an atlas file is there, and returns the summary tables. It is the **one function both the terminal and the website use**.
+**`run_analysis(...)`** is the conductor. It calls steps 1 to 5 in order, then section E if an atlas file is there, then section F if imaging features are set, and returns the summary tables. It is the **one function both the terminal and the website use**.
 
 **`main()`** is only for the terminal. It:
 1. reads the options you typed (`--demo`, `--condition-column`, `--conditions`)
@@ -283,7 +328,7 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 ### Important ideas in `app.py`
 
-- **Optional uploads.** The atlas upload field may be left empty. `upload()` then skips it, `run_analysis()` finds no atlas file, and the results page shows a short "no reference atlas was given" note in section E.
+- **Optional uploads.** The atlas and the single-cell imaging fields may be left empty. `upload()` then skips them, and `run_analysis()` simply doesn't find those files. The results page then shows a short note: "no reference atlas was given" in section E, or that the cell-level plots F6–F8 need the per-cell export in section F.
 - **A separate folder for every analysis.** Each upload gets a random ID (like `f7adccc8f906...`) and its own folder `runs/<id>/`, with `data/`, `results/` and `run.json` (the conditions you chose). Two analyses can never mix up their files.
 - **Errors become messages, not crashes.** When the analysis finds a problem, such as a missing column, it stops with an explanation. The helper `call_analysis(...)` catches that and shows the explanation on the page in red, so you can fix SETTINGS and try again.
 - **One analysis at a time.** A "lock" makes sure two analyses don't run at the same moment, because the plotting library isn't built for that.
@@ -304,7 +349,10 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 The tests are small programs that use the code and check the answers, like controls in an experiment. Run them with `python -m pytest test_app.py -v`. They check, among other things, that:
 
-- a full demo analysis writes all 21 result files (14 for sections A–D and 7 for the atlas, section E);
+- a full demo analysis writes all 35 result files (14 for sections A–D, 7 for the atlas in section E, 14 for imaging in section F);
+- without the single-cell imaging export, F6–F8 are skipped with a note; with it, they appear;
+- `robust_z` flags an injected outlier but not the normal values;
+- with no imaging features set, sections D and F are skipped and the rest still runs;
 - without an atlas, section E is skipped with a message; with one, all its files appear;
 - an atlas given as a summary table gives exactly the same proportions as the per-cell atlas it was made from;
 - choosing only one condition skips the condition plot instead of failing;

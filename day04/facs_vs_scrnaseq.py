@@ -39,6 +39,13 @@ What the program produces (in the results folder):
        - proportions of each population vs the atlas (per condition)
        - how different each sample's whole composition is from the atlas
        - marker patterns (atlas RNA vs Flex RNA vs FACS protein)
+  F. IMAGING PROFILES per cell type (S8 imaging features)
+       - mean +/- 95% confidence interval of each feature per population
+       - "morphological fingerprint" of each population (heatmap)
+       - PCA map: do the populations separate by imaging alone?
+       - outlier samples (robust z-score) and imaging vs marker correlations
+       - with a per-cell export (optional): cell distributions, % outlier
+         cells per sample (e.g. doublets, clumps) and a cell morphology map
 
 -------------------------------------------------------------------------------
 HOW TO RUN
@@ -116,6 +123,23 @@ INPUT FILES
        expr = atlas[:, genes].X        # log-normalized values, as for file 3
        export[genes] = expr.toarray() if hasattr(expr, "toarray") else expr
        export.to_csv("reference_atlas.csv", index=False)
+
+5) facs_imaging_cells.csv - OPTIONAL. The single FACS cells with their imaging
+   features (section F, cell-level plots). One row per cell:
+       facs_name (or sample_id), population, <one column per IMAGING_FEATURE>
+   "population" must be one of the population names in POPULATIONS.
+   In FlowJo, export each population gate as CSV (scale values) and combine the
+   files, e.g. when they are named "<facs_name>__<population>.csv":
+
+       import pandas as pd, pathlib
+       parts = []
+       for f in pathlib.Path("exports").glob("*.csv"):
+           facs_name, population = f.stem.split("__")
+           part = pd.read_csv(f)
+           part.insert(0, "population", population)
+           part.insert(0, "facs_name", facs_name)
+           parts.append(part)
+       pd.concat(parts).to_csv("facs_imaging_cells.csv", index=False)
 """
 
 # -----------------------------------------------------------------------------
@@ -239,6 +263,22 @@ IMAGING_FEATURES = [
     "Eccentricity (LightLoss)",
     "Radial Moment (LightLoss)",
 ]
+
+# ---- Imaging profiles per cell type (section F) ---------------------------------
+# Section F uses the IMAGING_FEATURES above. It always works from the FlowJo table
+# (one median per sample and population). If you ALSO export the single cells,
+# it adds cell-level plots (distributions, % outlier cells, morphology map).
+# Per-cell file: one row per cell, with columns
+#   facs_name (or sample_id), population, and one column per IMAGING_FEATURE
+# (in FlowJo: export the events of each population gate as CSV and combine them,
+#  adding the sample name and the population name as columns).
+FACS_CELLS_FILE = "facs_imaging_cells.csv"     # optional per-cell imaging export
+FACS_CELLS_POPULATION_COLUMN = "population"    # column with the population of each cell
+# A value counts as an OUTLIER when its robust z-score is above this number.
+# Robust z = 0.6745 x (value - median) / MAD, where MAD = median absolute deviation.
+# 3.5 is the usual cut-off (Iglewicz & Hoaglin). Robust z is not pulled by the
+# outliers themselves, unlike the normal mean/SD z-score.
+OUTLIER_CUTOFF = 3.5
 
 # ---- Analysis options -----------------------------------------------------------
 # How proportions are calculated (same rule for FACS and scRNA-seq):
@@ -1228,6 +1268,495 @@ def run_atlas_comparison(atlas_path, proportions, cells, protein_rna, condition_
 
 
 # =============================================================================
+# 4c. IMAGING PROFILES PER CELL TYPE (section F)
+# =============================================================================
+# Everything for section F is in this block. It describes each population with
+# all the S8 imaging features at once: typical values, a "fingerprint", a PCA
+# map, outliers, and links between shape and marker intensity. Sections A-E do
+# not use anything from here.
+#
+# Two levels of data:
+#   - SAMPLE level (always): the FlowJo table gives, per sample and population,
+#     the MEDIAN of each feature (the "imaging" table built for section D).
+#   - CELL level (optional): a per-cell export gives every single cell, so we
+#     can look at whole distributions and at unusual cells inside a sample.
+
+CONDITION_MARKERS = ["o", "s", "^", "D", "v", "P", "X"]   # point shapes for conditions in plot F3
+
+
+def robust_z(values):
+    """
+    Robust z-score (also called modified z-score):
+        0.6745 x (value - median) / MAD,   MAD = median of |value - median|
+    Like a normal z-score, but based on the median, so a few extreme values
+    cannot hide themselves by inflating the mean and SD. Values above
+    OUTLIER_CUTOFF (3.5) are called outliers. NaN if all values are identical.
+    """
+    x = np.asarray(values, dtype=float)
+    median = np.nanmedian(x) if np.any(~np.isnan(x)) else np.nan
+    mad = np.nanmedian(np.abs(x - median)) if not np.isnan(median) else np.nan
+    if not mad > 0:          # no spread (or no data): cannot judge outliers
+        return np.full_like(x, np.nan)
+    return 0.6745 * (x - median) / mad
+
+
+def imaging_outlier_samples(imaging, condition_column):
+    """
+    Sample-level outliers: for every population x feature, the robust z-score of
+    each sample's median compared with all samples of that population.
+    One row per sample x population x feature, with 'outlier' True/False.
+    """
+    table = imaging[[SAMPLE_COLUMN, condition_column, "population", "feature", "value"]].copy()
+    # robust z inside each population x feature (samples are compared with each other)
+    table["robust_z"] = table.groupby(["population", "feature"])["value"].transform(robust_z)
+    table["outlier"] = table["robust_z"].abs() > OUTLIER_CUTOFF
+    return table
+
+
+def imaging_population_summary(imaging, outliers):
+    """
+    One row per population x feature with the typical value over samples:
+    n, mean, SD, 95% confidence interval of the mean, median, CV%, min, max,
+    and how many samples are outliers.
+    """
+    rows = []
+    for pop in POPULATIONS:
+        for feature in IMAGING_FEATURES:
+            keep = (imaging["population"] == pop) & (imaging["feature"] == feature)
+            values = imaging.loc[keep, "value"].dropna().values
+            n = len(values)
+            mean = values.mean() if n else np.nan
+            sd = values.std(ddof=1) if n > 1 else np.nan
+            # 95% confidence interval of the mean (t distribution, suits small n)
+            half_width = stats.t.ppf(0.975, n - 1) * sd / np.sqrt(n) if n > 1 else np.nan
+            flagged = outliers[(outliers["population"] == pop) & (outliers["feature"] == feature)]
+            rows.append({
+                "population": pop, "feature": feature, "n_samples": n,
+                "mean": mean, "sd": sd,
+                "ci95_low": mean - half_width, "ci95_high": mean + half_width,
+                "median": np.median(values) if n else np.nan,
+                "cv_percent": 100 * sd / mean if n > 1 and mean != 0 else np.nan,   # spread relative to the mean
+                "min": values.min() if n else np.nan, "max": values.max() if n else np.nan,
+                "n_outlier_samples": int(flagged["outlier"].sum()),
+            })
+    return pd.DataFrame(rows)
+
+
+def imaging_pca(imaging, condition_column):
+    """
+    PCA (principal component analysis) of the imaging features. Each point is
+    one sample x population, described by all its feature medians. PCA finds
+    the two directions (PC1, PC2) that capture most of the differences, so a
+    many-feature description can be drawn on a flat map.
+    Features are standardized first (mean 0, SD 1) so each counts equally.
+    Returns (scores table, loadings table), or (None, None) if there are fewer
+    than 2 usable features or 3 points.
+    """
+    # Table: rows = sample x population, columns = features
+    wide = (imaging.pivot_table(index=[SAMPLE_COLUMN, "population", condition_column],
+                                columns="feature", values="value")
+            .reindex(columns=IMAGING_FEATURES).dropna())
+    # Features without any variation carry no information: leave them out
+    wide = wide.loc[:, wide.std(ddof=1) > 0]
+    if wide.shape[1] < 2 or len(wide) < 3:
+        return None, None
+    z = (wide - wide.mean()) / wide.std(ddof=1)                 # standardize each feature
+    u, s, vt = np.linalg.svd(z.values, full_matrices=False)    # the PCA itself
+    explained = s ** 2 / np.sum(s ** 2)                        # share of variation per PC
+
+    scores = wide.index.to_frame(index=False)
+    scores["PC1"], scores["PC2"] = u[:, 0] * s[0], u[:, 1] * s[1]
+    scores["PC1_explained"], scores["PC2_explained"] = explained[0], explained[1]
+    # Loadings: how much each feature contributes to PC1 and PC2 (the arrows in F3)
+    loadings = pd.DataFrame({"feature": wide.columns, "PC1": vt[0], "PC2": vt[1]})
+    return scores, loadings
+
+
+def imaging_marker_correlations(imaging, protein_rna):
+    """
+    Inside each population: across samples, does an imaging feature go together
+    with a marker's FACS intensity? (e.g. do larger proximal tubule cells carry
+    more CD13?) Spearman correlation for every population x feature x marker,
+    FDR-corrected over the whole table.
+    """
+    protein = protein_rna[[SAMPLE_COLUMN, "population", "marker", "protein_median"]]
+    rows = []
+    for pop in POPULATIONS:
+        for feature in IMAGING_FEATURES:
+            image_values = imaging[(imaging["population"] == pop) &
+                                   (imaging["feature"] == feature)][[SAMPLE_COLUMN, "value"]]
+            for marker in MARKERS:
+                marker_values = protein[(protein["population"] == pop) &
+                                        (protein["marker"] == marker)][[SAMPLE_COLUMN, "protein_median"]]
+                # Pair the two measurements of the same sample
+                both = image_values.merge(marker_values, on=SAMPLE_COLUMN)
+                rows.append({"population": pop, "feature": feature, "marker": marker,
+                             **correlate(both["value"], both["protein_median"])})
+    table = pd.DataFrame(rows)
+    table["spearman_q_fdr"] = fdr_correct(table["spearman_p"])
+    return table
+
+
+def load_facs_cells(path, metadata, condition_column):
+    """
+    Read the optional per-cell imaging export. Each cell gets its sample_id
+    (directly, or translated from facs_name) and the condition of its sample.
+    Only cells of known populations and of the chosen samples are kept.
+    """
+    cells_img = pd.read_csv(path, dtype={SAMPLE_COLUMN: str, FACS_NAME_COLUMN: str})
+    # Which sample is each cell from? Use sample_id, or translate facs_name via the metadata
+    if SAMPLE_COLUMN not in cells_img.columns:
+        if FACS_NAME_COLUMN not in cells_img.columns:
+            raise SystemExit(f"{path.name} needs a '{SAMPLE_COLUMN}' or a '{FACS_NAME_COLUMN}' column "
+                             "saying which sample each cell comes from.")
+        name_to_id = dict(zip(metadata[FACS_NAME_COLUMN], metadata[SAMPLE_COLUMN]))
+        cells_img[SAMPLE_COLUMN] = cells_img[FACS_NAME_COLUMN].map(name_to_id)
+    # Check the population column and every imaging feature column
+    get_column(cells_img, FACS_CELLS_POPULATION_COLUMN, path.name)
+    for feature in IMAGING_FEATURES:
+        get_column(cells_img, feature, path.name)
+    cells_img = cells_img.rename(columns={FACS_CELLS_POPULATION_COLUMN: "population"})
+
+    # Warn about population names that are not in SETTINGS (those cells are left out)
+    unknown = sorted(set(cells_img["population"].astype(str)) - set(POPULATIONS))
+    if unknown:
+        print(f"Note: these populations in {path.name} are not in POPULATIONS and are left out: {unknown}")
+    keep = cells_img["population"].isin(list(POPULATIONS)) & cells_img[SAMPLE_COLUMN].isin(metadata[SAMPLE_COLUMN])
+    cells_img = cells_img[keep].merge(metadata[[SAMPLE_COLUMN, condition_column]], on=SAMPLE_COLUMN)
+    print(f"Loaded {len(cells_img)} single FACS cells with imaging features "
+          f"from {cells_img[SAMPLE_COLUMN].nunique()} samples.")
+    return cells_img
+
+
+def cell_outlier_flags(cells_img):
+    """
+    Cell-level robust z-scores: every cell is compared with ALL cells of its
+    population (all chosen samples together). Returns a table of True/False,
+    one column per feature, plus 'Any feature' (outlier in at least one feature).
+    """
+    flags = pd.DataFrame(index=cells_img.index)
+    for feature in IMAGING_FEATURES:
+        z = cells_img.groupby("population")[feature].transform(robust_z)
+        flags[feature] = z.abs() > OUTLIER_CUTOFF
+    flags["Any feature"] = flags[IMAGING_FEATURES].any(axis=1)
+    return flags
+
+
+def cell_level_summary(cells_img, flags, condition_column):
+    """
+    One row per sample x population x feature, from the single cells:
+    number of cells, mean, median, SD, CV%, 5th and 95th percentile, and the
+    % of outlier cells. Extra rows with feature 'Any feature' give the % of
+    cells that are an outlier in at least one feature.
+    """
+    rows = []
+    for (sample, pop, group), part in cells_img.groupby([SAMPLE_COLUMN, "population", condition_column], sort=False):
+        for feature in IMAGING_FEATURES:
+            values = part[feature].dropna()
+            mean = values.mean() if len(values) else np.nan
+            sd = values.std(ddof=1) if len(values) > 1 else np.nan
+            rows.append({
+                SAMPLE_COLUMN: sample, "population": pop, condition_column: group, "feature": feature,
+                "n_cells": len(values), "mean": mean, "median": values.median(), "sd": sd,
+                "cv_percent": 100 * sd / mean if mean else np.nan,
+                "p5": values.quantile(0.05), "p95": values.quantile(0.95),   # the middle 90% of cells
+                "pct_outlier_cells": 100 * flags.loc[part.index, feature].mean(),
+            })
+        # Cells that are unusual in at least one feature
+        rows.append({SAMPLE_COLUMN: sample, "population": pop, condition_column: group,
+                     "feature": "Any feature", "n_cells": len(part),
+                     "pct_outlier_cells": 100 * flags.loc[part.index, "Any feature"].mean()})
+    return pd.DataFrame(rows)
+
+
+def feature_grid(n_panels, width=4.2, height=3.6):
+    """A grid of panels (at most 3 per row) for 'one panel per feature' plots; unused panels hidden."""
+    n_cols = min(3, n_panels)
+    n_rows = int(np.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width * n_cols, height * n_rows), squeeze=False)
+    for ax in axes.flat[n_panels:]:
+        ax.set_visible(False)
+    return fig, list(axes.flat[:n_panels])
+
+
+def plot_imaging_means(summary, outliers):
+    """
+    F1: one panel per feature. For each population: a bar at the mean over
+    samples, the 95% confidence interval as an error bar, every sample as a dot.
+    Outlier samples get a red ring and their name.
+    """
+    pops = list(POPULATIONS)
+    fig, axes = feature_grid(len(IMAGING_FEATURES))
+    rng = np.random.default_rng(0)            # same dot jitter every run
+    for ax, feature in zip(axes, IMAGING_FEATURES):
+        for i, pop in enumerate(pops):
+            color = population_color(pop)
+            row = summary[(summary["population"] == pop) & (summary["feature"] == feature)].iloc[0]
+            if np.isnan(row["mean"]):
+                continue
+            # Bar = mean, error bar = 95% confidence interval of the mean
+            ax.bar(i, row["mean"], width=0.6, color=color, alpha=0.25, edgecolor=color)
+            if np.isfinite(row["ci95_low"]):
+                ax.errorbar(i, row["mean"], yerr=[[row["mean"] - row["ci95_low"]], [row["ci95_high"] - row["mean"]]],
+                            color=color, capsize=4, linewidth=1.5)
+            # Dots = samples; outliers with a red ring and the sample name
+            part = outliers[(outliers["population"] == pop) & (outliers["feature"] == feature)].dropna(subset=["value"])
+            x = i + rng.uniform(-0.15, 0.15, len(part))
+            ax.scatter(x, part["value"], s=18, color=color, edgecolor="white", linewidth=0.8, zorder=3)
+            flagged = part["outlier"].values
+            ax.scatter(x[flagged], part["value"].values[flagged], s=70, facecolor="none",
+                       edgecolor="#d62728", linewidth=1.5, zorder=4)
+            for xi, (_, out) in zip(x[flagged], part[flagged].iterrows()):
+                ax.annotate(out[SAMPLE_COLUMN], (xi, out["value"]), xytext=(5, 3),
+                            textcoords="offset points", fontsize=7, color="#d62728")
+        ax.set_xticks(range(len(pops)), pops, rotation=20, ha="right")
+        ax.set_title(feature, loc="left")
+        ax.set_ylabel("Mean of sample medians")
+    # Legend explaining the red rings
+    axes[0].scatter([], [], s=70, facecolor="none", edgecolor="#d62728", linewidth=1.5,
+                    label=f"Outlier sample (robust z > {OUTLIER_CUTOFF})")
+    axes[0].legend(loc="upper left", fontsize=7)
+    save(fig, "F1_imaging_feature_means.png")
+
+
+def plot_imaging_fingerprint(summary):
+    """
+    F2: heatmap, rows = populations, columns = features. The color is the
+    population's mean compared with the other populations (z-score per feature:
+    red = higher than the other populations, blue = lower); the number written
+    in each cell is the actual mean value.
+    """
+    pops, features = list(POPULATIONS), IMAGING_FEATURES
+    means = summary.pivot(index="population", columns="feature", values="mean").reindex(index=pops, columns=features)
+    # z-score per feature across the populations (each column centred on its own average)
+    z = (means - means.mean()) / means.std(ddof=0).where(lambda s: s > 0)
+    fig, (ax, cax) = plt.subplots(1, 2, figsize=(1.7 * len(features) + 3, 0.6 * len(pops) + 2),
+                                  gridspec_kw={"width_ratios": [1, 0.05]})
+    image = ax.imshow(z.values, cmap="RdBu_r", vmin=-2, vmax=2, aspect="auto")
+    for r in range(len(pops)):
+        for c in range(len(features)):
+            ax.text(c, r, f"{means.values[r, c]:.3g}", ha="center", va="center", fontsize=8,
+                    color="white" if abs(np.nan_to_num(z.values[r, c])) > 1.3 else "#2e2228")
+    ax.set_xticks(range(len(features)), features, rotation=20, ha="right")
+    ax.set_yticks(range(len(pops)), pops)
+    ax.grid(False)
+    ax.set_title("Imaging fingerprint of each population (numbers = mean value)", loc="left")
+    fig.colorbar(image, cax=cax, label="Compared with other populations (z-score)")
+    save(fig, "F2_imaging_fingerprint.png")
+
+
+def plot_imaging_pca(scores, loadings, condition_column, conditions):
+    """
+    F3: PCA map. Each point = one sample x population; color = population,
+    shape = condition. Arrows show which feature pulls points in which direction.
+    """
+    # Left: the map. Right: a narrow empty panel that holds the legend (so it is never cut off)
+    fig, (ax, legend_ax) = plt.subplots(1, 2, figsize=(8, 5), gridspec_kw={"width_ratios": [1, 0.32]})
+    legend_ax.axis("off")
+    for pop in POPULATIONS:
+        for k, cond in enumerate(conditions):
+            part = scores[(scores["population"] == pop) & (scores[condition_column] == cond)]
+            ax.scatter(part["PC1"], part["PC2"], s=45, color=population_color(pop),
+                       marker=CONDITION_MARKERS[k % len(CONDITION_MARKERS)],
+                       edgecolor="white", linewidth=1, zorder=3)
+    # Feature arrows (loadings), scaled so that they stay inside the cloud of points
+    # in both directions (one scale for x and y, so the arrow angles stay correct)
+    scale = 0.8 * min(np.nanmax(np.abs(scores["PC1"])) / max(np.max(np.abs(loadings["PC1"])), 1e-9),
+                      np.nanmax(np.abs(scores["PC2"])) / max(np.max(np.abs(loadings["PC2"])), 1e-9))
+    for _, row in loadings.iterrows():
+        ax.annotate("", xy=(row["PC1"] * scale, row["PC2"] * scale), xytext=(0, 0),
+                    arrowprops={"arrowstyle": "->", "color": "#52514e", "linewidth": 1})
+        ax.text(row["PC1"] * scale * 1.08, row["PC2"] * scale * 1.08, row["feature"], fontsize=7, color="#52514e")
+    # Invisible points just beyond the arrow tips, so the axes always include every arrow and label
+    ax.scatter(loadings["PC1"] * scale * 1.25, loadings["PC2"] * scale * 1.25, s=0)
+    # Legend: colors = populations, shapes = conditions
+    for pop in POPULATIONS:
+        ax.scatter([], [], color=population_color(pop), s=40, label=pop)
+    for k, cond in enumerate(conditions):
+        ax.scatter([], [], color="#8a8984", marker=CONDITION_MARKERS[k % len(CONDITION_MARKERS)], s=40, label=cond)
+    legend_ax.legend(*ax.get_legend_handles_labels(), loc="upper left")
+    ax.axhline(0, color="#e6e5e0", linewidth=1, zorder=1)
+    ax.axvline(0, color="#e6e5e0", linewidth=1, zorder=1)
+    ax.set_xlabel(f"PC1 ({scores['PC1_explained'].iloc[0]:.0%} of variation)")
+    ax.set_ylabel(f"PC2 ({scores['PC2_explained'].iloc[0]:.0%} of variation)")
+    ax.set_title("Imaging map: samples x populations (PCA of all features)", loc="left")
+    save(fig, "F3_imaging_pca.png")
+
+
+def plot_imaging_outliers(outliers, condition_column, conditions):
+    """
+    F4: heatmap of robust z-scores. Rows = samples (grouped by condition),
+    columns = population x feature. Outliers (|z| > OUTLIER_CUTOFF) are labelled
+    with their z-value.
+    """
+    # Order the samples by condition, then by name
+    order = (outliers[[SAMPLE_COLUMN, condition_column]].drop_duplicates()
+             .assign(_c=lambda d: d[condition_column].map(list(conditions).index))
+             .sort_values(["_c", SAMPLE_COLUMN]))
+    columns = [(pop, feature) for pop in POPULATIONS for feature in IMAGING_FEATURES]
+    grid = (outliers.pivot_table(index=SAMPLE_COLUMN, columns=["population", "feature"], values="robust_z")
+            .reindex(index=order[SAMPLE_COLUMN], columns=pd.MultiIndex.from_tuples(columns)))
+    fig, (ax, cax) = plt.subplots(1, 2, figsize=(0.5 * len(columns) + 3.5, 0.32 * len(grid) + 3),
+                                  gridspec_kw={"width_ratios": [1, 0.03]})
+    image = ax.imshow(np.clip(grid.values, -6, 6), cmap="RdBu_r", vmin=-6, vmax=6, aspect="auto")
+    # Write the z-value only where it is an outlier
+    for r in range(grid.shape[0]):
+        for c in range(grid.shape[1]):
+            value = grid.values[r, c]
+            if np.isfinite(value) and abs(value) > OUTLIER_CUTOFF:
+                ax.text(c, r, f"{value:.1f}", ha="center", va="center", fontsize=7,
+                        fontweight="bold", color="white")
+    ax.set_xticks(range(len(columns)), [f"{p} · {f}" for p, f in columns], rotation=90, fontsize=7)
+    ax.set_yticks(range(len(grid)), [f"{s} ({c})" for s, c in zip(order[SAMPLE_COLUMN], order[condition_column])],
+                  fontsize=7)
+    ax.grid(False)
+    ax.set_title(f"Outlier samples: robust z-score (labelled when |z| > {OUTLIER_CUTOFF})", loc="left")
+    fig.colorbar(image, cax=cax, label="Robust z-score")
+    save(fig, "F4_imaging_outlier_samples.png")
+
+
+def plot_imaging_marker_correlations(correlations):
+    """
+    F5: one heatmap per population. Rows = imaging features, columns = markers,
+    color = Spearman r across samples. * = significant after FDR correction.
+    """
+    pops, markers = list(POPULATIONS), list(MARKERS)
+    fig, axes = plt.subplots(1, len(pops) + 1,
+                             figsize=(2.2 * len(pops) * len(markers) / 3 + 2.5, 0.5 * len(IMAGING_FEATURES) + 2.4),
+                             gridspec_kw={"width_ratios": [1] * len(pops) + [0.07]})
+    for i, (ax, pop) in enumerate(zip(axes[:-1], pops)):
+        part = correlations[correlations["population"] == pop]
+        r = part.pivot(index="feature", columns="marker", values="spearman_r").reindex(index=IMAGING_FEATURES, columns=markers)
+        q = part.pivot(index="feature", columns="marker", values="spearman_q_fdr").reindex(index=IMAGING_FEATURES, columns=markers)
+        image = ax.imshow(r.values, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+        for a in range(r.shape[0]):
+            for b in range(r.shape[1]):
+                value = r.values[a, b]
+                star = "*" if q.values[a, b] < ALPHA else ""
+                ax.text(b, a, "–" if np.isnan(value) else f"{value:.2f}{star}", ha="center", va="center",
+                        fontsize=7, color="white" if abs(np.nan_to_num(value)) > 0.6 else "#2e2228")
+        ax.set_xticks(range(len(markers)), markers, fontsize=8)
+        ax.set_yticks(range(len(IMAGING_FEATURES)), IMAGING_FEATURES if i == 0 else [], fontsize=8)
+        ax.grid(False)
+        ax.set_title(pop, loc="left")
+    fig.colorbar(image, cax=axes[-1], label="Spearman r (across samples)")
+    save(fig, "F5_imaging_vs_markers.png")
+
+
+def plot_cell_distributions(cells_img):
+    """F6: one panel per feature; violin plot of ALL single cells of each population."""
+    pops = list(POPULATIONS)
+    fig, axes = feature_grid(len(IMAGING_FEATURES))
+    for ax, feature in zip(axes, IMAGING_FEATURES):
+        for i, pop in enumerate(pops):
+            values = cells_img.loc[cells_img["population"] == pop, feature].dropna().values
+            if len(values) < 2:
+                continue
+            # The violin's width shows how many cells have each value
+            part = ax.violinplot(values, positions=[i], widths=0.8, showmedians=True, showextrema=False)
+            for body in part["bodies"]:
+                body.set_facecolor(population_color(pop))
+                body.set_edgecolor(population_color(pop))
+                body.set_alpha(0.45)
+            part["cmedians"].set_color("#0b0b0b")
+        ax.set_xticks(range(len(pops)), pops, rotation=20, ha="right")
+        ax.set_title(feature, loc="left")
+        ax.set_ylabel("Value per cell")
+    save(fig, "F6_imaging_cell_distributions.png")
+
+
+def plot_cell_outliers(cell_summary):
+    """
+    F7: one panel per feature (+ 'Any feature'). Each dot = one sample: the % of
+    its cells that are outliers compared with all cells of the same population.
+    """
+    pops = list(POPULATIONS)
+    panels = IMAGING_FEATURES + ["Any feature"]
+    fig, axes = feature_grid(len(panels), width=4, height=3.4)
+    for ax, feature in zip(axes, panels):
+        part = cell_summary[cell_summary["feature"] == feature]
+        for i, pop in enumerate(pops):
+            values = part.loc[part["population"] == pop, "pct_outlier_cells"]
+            boxplot_with_points(ax, [values], [i], population_color(pop), width=0.5)
+        ax.set_xticks(range(len(pops)), pops, rotation=20, ha="right")
+        ax.set_ylim(bottom=0)
+        ax.set_title(feature, loc="left")
+        ax.set_ylabel("% outlier cells per sample")
+    save(fig, "F7_imaging_cell_outliers.png")
+
+
+def plot_morphology_map(cells_img, flags, condition_column, conditions):
+    """
+    F8: single cells on a map of the first two imaging features, one panel per
+    condition, colored by population. Outlier cells (any feature) are drawn as
+    black crosses. At most 4000 cells per panel are drawn, picked at random.
+    """
+    x_feature, y_feature = IMAGING_FEATURES[0], IMAGING_FEATURES[1]
+    rng = np.random.default_rng(0)
+    fig, axes = plt.subplots(1, len(conditions), figsize=(4.6 * len(conditions) + 1.5, 4.2), squeeze=False)
+    for ax, cond in zip(axes[0], conditions):
+        part = cells_img[cells_img[condition_column] == cond]
+        if len(part) > 4000:
+            part = part.loc[rng.choice(part.index, 4000, replace=False)]
+        for pop in POPULATIONS:
+            sub = part[part["population"] == pop]
+            ax.scatter(sub[x_feature], sub[y_feature], s=4, alpha=0.4, color=population_color(pop),
+                       linewidths=0, label=pop)
+        odd = part[flags.loc[part.index, "Any feature"]]
+        ax.scatter(odd[x_feature], odd[y_feature], s=10, marker="x", color="#0b0b0b", linewidths=0.6,
+                   label="Outlier cell")
+        ax.set_title(cond, loc="left")
+        ax.set_xlabel(x_feature)
+        ax.set_ylabel(y_feature)
+    axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1, 1), markerscale=3)
+    save(fig, "F8_imaging_morphology_map.png")
+
+
+def run_imaging_profiles(imaging, protein_rna, data_dir, metadata, condition_column, conditions):
+    """
+    Section F from start to end. Sample-level tables and plots F1-F5 always;
+    cell-level table and plots F6-F8 only if the per-cell export is there.
+    Returns the population summary table.
+    """
+    # --- Sample level (from the FlowJo table) ---
+    outliers = imaging_outlier_samples(imaging, condition_column)
+    summary = imaging_population_summary(imaging, outliers)
+    scores, loadings = imaging_pca(imaging, condition_column)
+    correlations = imaging_marker_correlations(imaging, protein_rna)
+
+    summary.to_csv(OUTPUT_DIR / "F_imaging_population_summary.csv", index=False)
+    outliers.to_csv(OUTPUT_DIR / "F_imaging_outlier_samples.csv", index=False)
+    correlations.to_csv(OUTPUT_DIR / "F_imaging_marker_correlations.csv", index=False)
+    if scores is not None:
+        scores.to_csv(OUTPUT_DIR / "F_imaging_pca.csv", index=False)
+        loadings.to_csv(OUTPUT_DIR / "F_imaging_pca_loadings.csv", index=False)
+
+    plot_imaging_means(summary, outliers)
+    plot_imaging_fingerprint(summary)
+    if scores is not None:
+        plot_imaging_pca(scores, loadings, condition_column, conditions)
+    else:
+        print("Note: the imaging PCA (F3) needs at least 2 imaging features with variation - skipped.")
+    plot_imaging_outliers(outliers, condition_column, conditions)
+    plot_imaging_marker_correlations(correlations)
+
+    # --- Cell level (optional per-cell export) ---
+    cells_path = data_dir / FACS_CELLS_FILE
+    if cells_path.exists():
+        cells_img = load_facs_cells(cells_path, metadata, condition_column)
+        flags = cell_outlier_flags(cells_img)
+        cell_summary = cell_level_summary(cells_img, flags, condition_column)
+        cell_summary.to_csv(OUTPUT_DIR / "F_imaging_cell_summary.csv", index=False)
+        plot_cell_distributions(cells_img)
+        plot_cell_outliers(cell_summary)
+        if len(IMAGING_FEATURES) >= 2:
+            plot_morphology_map(cells_img, flags, condition_column, conditions)
+    else:
+        print(f"No per-cell imaging export ({FACS_CELLS_FILE}) found - cell-level plots F6-F8 skipped.")
+    return summary
+
+
+# =============================================================================
 # 5. DEMO DATA (only used with --demo)
 # =============================================================================
 # Makes realistic-looking fake input files so the whole program can be tested
@@ -1322,8 +1851,30 @@ def make_demo_data(folder):
             atlas[info["gene"]] = np.clip(rng.normal(mean, 0.5), 0, None).round(3)
         atlas_tables.append(atlas)
 
+    # --- Per-cell imaging export: the single cells of every gate (section F) ---
+    # Uses its own random numbers, so all the other demo files stay exactly the same.
+    cell_rng = np.random.default_rng(2)
+    imaging_cells = []
+    for row in facs_rows:
+        for pop in pops:
+            gate = POPULATIONS[pop]["gate"]
+            n_cells_gate = int(cell_rng.integers(150, 300))
+            part = {FACS_NAME_COLUMN: row["Name"], FACS_CELLS_POPULATION_COLUMN: pop}
+            # About 2% odd cells (e.g. doublets or clumps) that sit far from the rest
+            odd = cell_rng.random(n_cells_gate) < 0.02
+            for feature in IMAGING_FEATURES:
+                # Cells scatter around the sample's median from the FlowJo table
+                median = row[MEDIAN_COLUMN.format(gate=gate, parameter=feature)]
+                values = median * cell_rng.lognormal(0, 0.12, n_cells_gate)
+                values[odd] *= 1.9
+                if "Eccentricity" in feature:          # eccentricity is between 0 and 1
+                    values = np.clip(values, 0, 0.99)
+                part[feature] = values.round(3)
+            imaging_cells.append(pd.DataFrame(part))
+
     # Write the files in the same formats as the real inputs
     metadata.to_csv(folder / METADATA_FILE, index=False)
+    pd.concat(imaging_cells).to_csv(folder / FACS_CELLS_FILE, index=False)
     pd.DataFrame(facs_rows).to_excel(folder / FACS_FILE, index=False)
     pd.concat(cell_tables).to_csv(folder / SEQ_FILE, index=False)
     pd.concat(atlas_tables).to_csv(folder / ATLAS_FILE, index=False)
@@ -1338,9 +1889,9 @@ def make_demo_data(folder):
 
 def run_analysis(data_dir, output_dir, condition_column=None, conditions=None):
     """
-    Run steps 1-5 on the input files in data_dir (+ section E if an atlas file is
-    there) and write every table and
-    plot to output_dir. Used by the command line (main, below) and by the web
+    Run steps 1-5 on the input files in data_dir, plus section E (if an atlas
+    file is there) and section F (if imaging features are set), and write every
+    table and plot to output_dir. Used by the command line (main, below) and by the web
     interface (app.py). If condition_column or conditions is None, the user is
     asked in the terminal. Returns the summary tables so the caller can show them.
     """
@@ -1410,8 +1961,16 @@ def run_analysis(data_dir, output_dir, condition_column=None, conditions=None):
     else:
         print(f"\nNo reference atlas ({ATLAS_FILE}) found - section E skipped.")
 
+    # --- Section F: imaging profiles per cell type (skipped if no imaging features) ---
+    imaging_summary = None
+    if imaging is not None:
+        print("\nImaging profiles per cell type ...")
+        imaging_summary = run_imaging_profiles(imaging, protein_rna, data_dir, metadata,
+                                               condition_column, conditions)
+
     # Hand the main results back to whoever called this (terminal or web app)
     return {
+        "imaging_summary": imaging_summary,
         "atlas_tests": atlas_tests,
         "condition_column": condition_column,
         "conditions": conditions,

@@ -24,7 +24,7 @@ For day04 I copied that program into this folder and added a web application bui
    Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
 3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
 4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
-5. Upload your three files (plus, optionally, a reference atlas), or click **Use demo data** to try it with made-up data.
+5. Upload your three files (plus, optionally, a reference atlas and a single-cell imaging export), or click **Use demo data** to try it with made-up data.
 6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
 
 Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
@@ -63,7 +63,7 @@ What the address **http://127.0.0.1:5050** means:
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
-| `test_app.py` | 14 automatic tests covering both the terminal program and the web app. |
+| `test_app.py` | 17 automatic tests covering both the terminal program and the web app. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
 ---
@@ -95,14 +95,14 @@ If you don't pass the condition column and conditions to `run_analysis()`, it st
 The web app is a thin layer over the analysis script. It does `import facs_vs_scrnaseq as analysis` and calls its functions. You go through three pages:
 
 1. **Upload page (`/`):**
-   - Upload the three input files: the sample sheet `.csv`, the FlowJo export `.xlsx` and the per-cell scRNA-seq `.csv`. A fourth file, a reference atlas `.csv`, is optional (see Step 5).
-   - Or click **Use demo data** to make the made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas) with the script's own `make_demo_data()`.
+   - Upload the three input files: the sample sheet `.csv`, the FlowJo export `.xlsx` and the per-cell scRNA-seq `.csv`. Two more files are optional: a reference atlas `.csv` (see Step 5) and a single-cell imaging export `.csv` (see Step 6).
+   - Or click **Use demo data** to make the made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas and single-cell imaging data) with the script's own `make_demo_data()`.
    - The page also shows the current SETTINGS from the script (populations, gate paths, markers and channels, imaging features), so you can see what the program expects.
 2. **Setup page (`/run/<id>`):** this replaces typing numbers in the terminal.
    - Pick the condition column with radio buttons.
    - Tick the conditions you want; each one shows how many samples it has.
    - Ticking nothing includes everything, like pressing Enter in the terminal version.
-3. **Results page (`/run/<id>/results`):** one section per analysis (A proportions, B conditions, C protein vs RNA, D imaging, and E reference atlas when an atlas was given). Each section has:
+3. **Results page (`/run/<id>/results`):** one section per analysis (A proportions, B conditions, C protein vs RNA, D imaging, E reference atlas when an atlas was given, F imaging profiles per cell type). Each section has:
    - a summary table
    - all the plots
    - links to the CSV tables
@@ -180,6 +180,40 @@ Later I added an **optional** fourth input: a reference single-cell atlas of uri
   - an upload with an atlas shows all 7 E files;
   - a summary-table atlas gives exactly the same proportions as the per-cell atlas it was made from, and skips the marker heatmap.
 
+### Step 6: Imaging profiles per cell type (section F)
+
+Next I asked for everything the S8 imaging can tell about each cell type: mean morphological features, outliers, and anything else interesting. The S8 images give **morphological** features (size, shape, texture, where the signal sits in the cell), not physiological ones. Those need functional dyes. Section F describes each population with all its imaging features at once. It runs whenever `IMAGING_FEATURES` is set, and section D is unchanged.
+
+**Two levels of data:**
+- **Sample level (always):** the FlowJo table already has the **median** of each feature per sample and population. Plots F1–F5 use it.
+- **Cell level (optional new file, `facs_imaging_cells.csv`):** one row per FACS cell, with its population and imaging features, exported from FlowJo. Plots F6–F8 need it to look at single cells.
+
+**Outliers** are found with a **robust z-score**, `0.6745 × (value − median) / MAD`, where MAD is the median absolute deviation. A value above 3.5 counts as an outlier (`OUTLIER_CUTOFF` in SETTINGS). Unlike the usual mean/SD z-score, a few extreme values can't hide themselves by inflating the spread.
+
+| Output | What it shows |
+|---|---|
+| `F1_imaging_feature_means.png` | Mean of each feature per cell type, with a 95% confidence interval and every sample as a dot. Outlier samples are ringed in red and named. |
+| `F2_imaging_fingerprint.png` | A heatmap "fingerprint" of each cell type: the mean values, colored by how much higher or lower they are than in the other populations. |
+| `F3_imaging_pca.png` | A PCA map of all features at once: do the cell types separate by morphology alone, and does a condition shift them? Arrows show what each feature contributes. |
+| `F4_imaging_outlier_samples.png` | Robust z-score of every sample × population × feature; outliers are labelled. |
+| `F5_imaging_vs_markers.png` | Spearman correlation between imaging features and FACS marker intensity across samples, within each cell type (* = significant after FDR). |
+| `F6_imaging_cell_distributions.png` | *(per-cell file)* Violin plots of all single cells per cell type. |
+| `F7_imaging_cell_outliers.png` | *(per-cell file)* The % of outlier cells per sample and cell type, for example doublets, clumps or debris. |
+| `F8_imaging_morphology_map.png` | *(per-cell file)* Single cells on a map of the first two features, per condition, with outlier cells marked. |
+| `F_imaging_population_summary.csv` | Per cell type × feature: n, mean, SD, 95% CI, median, CV%, min, max and the number of outlier samples (shown on the website). |
+| `F_imaging_outlier_samples.csv`, `F_imaging_pca.csv`, `F_imaging_pca_loadings.csv`, `F_imaging_marker_correlations.csv`, `F_imaging_cell_summary.csv` | The numbers behind the plots. The cell summary has per sample × cell type × feature: n cells, mean, median, SD, CV%, 5th/95th percentile and % outlier cells. |
+
+**Website:** a new optional upload field "Single-cell imaging export", and section F on the results page with explanations of every plot and table column. If the per-cell file is missing, a note says that F6–F8 need it. The demo data now also includes single-cell imaging data, with about 2% "odd" cells such as doublets.
+
+**How it was checked:**
+- **No existing outputs changed.** All 21 earlier plots and tables (sections A–E) are byte for byte identical to the version before this step.
+- **Plots checked by eye:** the new plots were rendered and checked. One fix: in F3 the feature arrows could fall outside the plot, so they are now scaled to always fit.
+- **New tests:** 17 tests pass. The new ones check:
+  - without the per-cell file, F1–F5 appear and F6–F8 are skipped with a note;
+  - with it, F6–F8 appear;
+  - `robust_z` flags an injected outlier but not the normal values, and doesn't crash when all values are equal;
+  - with no imaging features set, sections D and F are skipped and the rest still runs.
+
 ---
 
 ## How to use it
@@ -211,7 +245,7 @@ python -m pytest test_app.py -v
 
 ---
 
-## Input files (1–3 as in day03, 4 is new)
+## Input files (1–3 as in day03, 4 and 5 are new)
 
 1. **`metadata.csv`:** one row per sample, with `sample_id`, `facs_name` (the sample name as it appears in FlowJo) and any condition columns.
 2. **FlowJo export `.xlsx`:** one row per sample, with the count of each population gate and the median of each marker and imaging feature in each population.
@@ -221,6 +255,7 @@ python -m pytest test_app.py -v
    - or one row per cell type (× donor), with `cell_type`, an optional `donor_id` and `n_cells`.
 
    Put the atlas cell-type names in `atlas_labels` in SETTINGS. The script's header comment has a snippet to export an atlas from Scanpy.
+5. **`facs_imaging_cells.csv` (optional, new in day04):** the single FACS cells with their imaging features. It has one row per cell, with `facs_name` (or `sample_id`), `population` (one of the names in `POPULATIONS`) and one column per imaging feature, named exactly as in `IMAGING_FEATURES`. In FlowJo, export the events of each population gate as CSV and combine them. The script's header comment has a snippet that does this.
 
 ---
 
@@ -228,5 +263,6 @@ python -m pytest test_app.py -v
 
 - **Placeholder settings:** I don't have real data yet. The channel names (`FLUOR1`–`4`), gate paths, imaging feature names and atlas labels are placeholders. Everything has only been tested on the made-up demo data.
 - **Comparing with an atlas:** an atlas is made with other protocols and is usually from healthy people. Small differences from it are expected, and differences in a disease condition can be biology rather than an error. The marker heatmap (E3) only compares patterns (which population is high or low), not absolute levels.
+- **Imaging and outliers:** the S8 imaging features describe morphology, not physiology. An outlier is a reason to look at the images of that sample or those cells, not an automatic reason to exclude them. With few samples, the imaging vs marker correlations (F5) are uncertain, so only strong, significant ones should be trusted.
 - **Local use only:** the web app is meant to run on my own computer. It has no login, and runs are kept in `runs/` until I delete them.
 - **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition.

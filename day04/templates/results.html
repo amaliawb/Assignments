@@ -48,6 +48,11 @@
     <p class="muted">No tests between conditions. This needs at least two conditions, each with at least the minimum number of samples.</p>
   {% elif section.letter == "E" %}
     <p class="muted">No reference atlas was given, so this section was skipped. Upload a reference atlas (.csv) on the start page to compare your data with it.</p>
+  {% elif section.letter == "F" %}
+    <p class="muted">No imaging features are set (IMAGING_FEATURES in the SETTINGS of facs_vs_scrnaseq.py), so this section was skipped.</p>
+  {% endif %}
+  {% if section.letter == "F" and section.plots and "F6_imaging_cell_distributions.png" not in section.plots | map("first") | list %}
+    <p class="muted">The cell-level plots (F6–F8) need the optional per-cell imaging export. Upload it on the start page to add them.</p>
   {% endif %}
 
   {# Each plot with its explanation underneath #}

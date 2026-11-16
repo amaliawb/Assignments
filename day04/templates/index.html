@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card">
   <h1>1. Upload your data</h1>
-  <p>The three files from the same samples, plus an optional reference atlas. The script's comments describe each format.</p>
+  <p>The three files from the same samples, plus two optional files (a reference atlas and a single-cell imaging export). The script's comments describe each format.</p>
   <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
     <label>Sample sheet <code>{{ uploads.metadata[0] }}</code>
       <input type="file" name="metadata" accept=".csv" required></label>
@@ -14,13 +14,17 @@
       <input type="file" name="atlas" accept=".csv"></label>
     <p class="muted">The reference atlas is a single-cell dataset of urine with known cell types.
        With it, section E compares your FACS and Flex results with the atlas. Without it, section E is skipped.</p>
+    <label>Single-cell imaging export <code>{{ uploads.facs_cells[0] }}</code> <span class="muted">(optional)</span>
+      <input type="file" name="facs_cells" accept=".csv"></label>
+    <p class="muted">One row per FACS cell with its population and S8 imaging features (exported from FlowJo).
+       With it, section F adds cell-level plots: distributions, % outlier cells per sample and a morphology map.</p>
     <button type="submit">Upload and continue</button>
   </form>
 </section>
 
 <section class="card">
   <h2>No data yet?</h2>
-  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas of 8 healthy donors) and analyse that instead.</p>
+  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas of 8 healthy donors and single-cell imaging data) and analyse that instead.</p>
   <form action="{{ url_for('upload') }}" method="post">
     <button type="submit" name="demo" value="1" class="secondary">Use demo data</button>
   </form>
@@ -42,7 +46,7 @@
     <tr><td>{{ name }}</td><td><i>{{ info.gene }}</i></td><td><code>{{ info.facs_parameter }}</code></td></tr>
     {% endfor %}
   </table>
-  <p>Imaging features: {% for f in analysis.IMAGING_FEATURES %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %}<br>
+  <p>Imaging features: {% for f in analysis.IMAGING_FEATURES %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %} · outlier cut-off: robust z > {{ analysis.OUTLIER_CUTOFF }}<br>
      Proportion denominator: <code>{{ analysis.PROPORTION_DENOMINATOR }}</code> ·
      minimum samples per group: {{ analysis.MIN_SAMPLES_PER_GROUP }} ·
      FDR threshold: {{ analysis.ALPHA }}</p>

@@ -30,8 +30,17 @@ EXPECTED_FILES = [
     "E1_atlas_proportions.png", "E2_atlas_composition_difference.png", "E3_atlas_marker_profiles.png",
     "E_atlas_composition_difference.csv", "E_atlas_marker_profiles.csv",
     "E_atlas_proportion_tests.csv", "E_atlas_proportions.csv",
+    "F1_imaging_feature_means.png", "F2_imaging_fingerprint.png", "F3_imaging_pca.png",
+    "F4_imaging_outlier_samples.png", "F5_imaging_vs_markers.png",
+    "F6_imaging_cell_distributions.png", "F7_imaging_cell_outliers.png", "F8_imaging_morphology_map.png",
+    "F_imaging_cell_summary.csv", "F_imaging_marker_correlations.csv", "F_imaging_outlier_samples.csv",
+    "F_imaging_pca.csv", "F_imaging_pca_loadings.csv", "F_imaging_population_summary.csv",
 ]
 ATLAS_FILES = [f for f in EXPECTED_FILES if f.startswith("E")]
+# Section F files that need the optional per-cell imaging export
+CELL_LEVEL_FILES = ["F6_imaging_cell_distributions.png", "F7_imaging_cell_outliers.png",
+                    "F8_imaging_morphology_map.png", "F_imaging_cell_summary.csv"]
+SAMPLE_LEVEL_F_FILES = [f for f in EXPECTED_FILES if f.startswith("F") and f not in CELL_LEVEL_FILES]
 
 
 @pytest.fixture
@@ -109,7 +118,7 @@ def test_demo_run_end_to_end(client):
     for name in EXPECTED_FILES:
         assert name in page
     # every section has its question, and every plot has a "how to read it" explanation
-    assert page.count("<b>Question:</b>") == 5
+    assert page.count("<b>Question:</b>") == 6
     assert page.count("How to read it") == len([f for f in EXPECTED_FILES if f.endswith(".png")])
     assert all(plot in web.explanations.PLOT_HELP for plot in EXPECTED_FILES if plot.endswith(".png"))
     assert client.get(f"/run/{run_id}/file/A1_proportions_stacked.png").mimetype == "image/png"
@@ -135,6 +144,43 @@ def test_upload_own_files(client, demo_data):
     # the atlas is optional: without it section E is skipped with a message
     assert "No reference atlas was given" in page
     assert not any(name in page for name in ATLAS_FILES)
+    # without the per-cell imaging export: sample-level imaging plots only, plus a note
+    assert all(name in page for name in SAMPLE_LEVEL_F_FILES)
+    assert not any(name in page for name in CELL_LEVEL_FILES)
+    assert "The cell-level plots (F6–F8) need the optional per-cell imaging export" in page
+
+
+def test_upload_per_cell_imaging_export(client, demo_data):
+    files = {
+        "metadata": (open(demo_data / "metadata.csv", "rb"), "my_samples.csv"),
+        "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx"),
+        "seq": (open(demo_data / "scrnaseq_cells.csv", "rb"), "cells.csv"),
+        "facs_cells": (open(demo_data / analysis.FACS_CELLS_FILE, "rb"), "single_cells.csv"),
+    }
+    response = client.post("/upload", data=files, content_type="multipart/form-data")
+    run_id = response.headers["Location"].rstrip("/").split("/")[-1]
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    assert all(name in page for name in CELL_LEVEL_FILES)
+    assert "need the optional per-cell imaging export" not in page
+
+
+def test_robust_z_flags_an_outlier():
+    values = [10, 11, 9, 10, 12, 10, 11, 40]          # 40 is far from the rest
+    z = analysis.robust_z(values)
+    assert abs(z[-1]) > analysis.OUTLIER_CUTOFF
+    assert all(abs(v) < analysis.OUTLIER_CUTOFF for v in z[:-1])
+    # no spread at all: outliers cannot be judged -> NaN instead of a crash
+    assert all(pd.isna(analysis.robust_z([5, 5, 5])))
+
+
+def test_no_imaging_features_skips_sections_d_and_f(demo_data, tmp_path, monkeypatch):
+    monkeypatch.setattr(analysis, "IMAGING_FEATURES", [])
+    out = tmp_path / "results"
+    analysis.run_analysis(demo_data, out, "condition", ["Healthy", "Disease"])
+    made = {p.name for p in out.iterdir()}
+    assert not any(name.startswith(("D", "F")) for name in made)
+    assert "A1_proportions_stacked.png" in made
 
 
 def test_upload_own_files_with_atlas(client, demo_data):
