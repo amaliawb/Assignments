@@ -106,7 +106,10 @@ table.data {
   border-collapse: separate; border-spacing: 0; margin: 10px 0 14px; font-size: 14px;
   border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
 }
-table.data th, table.data td { padding: 6px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+table.data th, table.data td {
+  padding: 6px 12px; border-bottom: 1px solid var(--border); text-align: left;
+  white-space: nowrap;   /* one line per cell; wide tables scroll sideways instead */
+}
 table.data tr:last-child td { border-bottom: 0; }
 table.data th { background: var(--surface-tint); color: var(--muted); font-weight: 700; }
 table.data tbody tr:hover td { background: var(--surface-tint); }

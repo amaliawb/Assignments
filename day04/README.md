@@ -24,7 +24,7 @@ For day04 I copied that program into this folder and added a web application bui
    Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
 3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
 4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
-5. Upload your three files, or click **Use demo data** to try it with made-up data.
+5. Upload your three files (plus, optionally, a reference atlas), or click **Use demo data** to try it with made-up data.
 6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
 
 Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
@@ -63,7 +63,7 @@ What the address **http://127.0.0.1:5050** means:
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
-| `test_app.py` | 12 automatic tests covering both the terminal program and the web app. |
+| `test_app.py` | 14 automatic tests covering both the terminal program and the web app. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
 ---
@@ -95,14 +95,14 @@ If you don't pass the condition column and conditions to `run_analysis()`, it st
 The web app is a thin layer over the analysis script. It does `import facs_vs_scrnaseq as analysis` and calls its functions. You go through three pages:
 
 1. **Upload page (`/`):**
-   - Upload the three input files: the sample sheet `.csv`, the FlowJo export `.xlsx` and the per-cell scRNA-seq `.csv`.
-   - Or click **Use demo data** to make the made-up demo dataset (10 samples, 5 Healthy and 5 Disease) with the script's own `make_demo_data()`.
+   - Upload the three input files: the sample sheet `.csv`, the FlowJo export `.xlsx` and the per-cell scRNA-seq `.csv`. A fourth file, a reference atlas `.csv`, is optional (see Step 5).
+   - Or click **Use demo data** to make the made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas) with the script's own `make_demo_data()`.
    - The page also shows the current SETTINGS from the script (populations, gate paths, markers and channels, imaging features), so you can see what the program expects.
 2. **Setup page (`/run/<id>`):** this replaces typing numbers in the terminal.
    - Pick the condition column with radio buttons.
    - Tick the conditions you want; each one shows how many samples it has.
    - Ticking nothing includes everything, like pressing Enter in the terminal version.
-3. **Results page (`/run/<id>/results`):** one section per analysis (A proportions, B conditions, C protein vs RNA, D imaging). Each section has:
+3. **Results page (`/run/<id>/results`):** one section per analysis (A proportions, B conditions, C protein vs RNA, D imaging, and E reference atlas when an atlas was given). Each section has:
    - a summary table
    - all the plots
    - links to the CSV tables
@@ -149,6 +149,37 @@ I asked Claude to check both the old (day03) and the new (day04) versions. It di
    - a missing file, a wrong file type, a sample sheet missing columns, and a wrong gate name each give an error message, not a crash
    - unknown or unsafe run IDs give 404
 
+### Step 5: Comparison with a reference single-cell atlas (section E)
+
+Later I added an **optional** fourth input: a reference single-cell atlas of urine with known cell types, such as a published dataset. When it is given, a new section **E** compares my FACS and Flex results with the atlas. When it isn't, section E is skipped and everything else runs exactly as before.
+
+**What was added:**
+- **Settings:** `ATLAS_FILE` and the atlas column names. Each population also gets an `atlas_labels` list, because an atlas usually names cell types differently from my notebook (for example "Myeloid cell" → Immune).
+- **Two atlas formats:**
+  - one row per cell (`cell_type`, optional `donor_id`, optional gene columns `PTPRC, MME, ANPEP, EPCAM`);
+  - a summary table with one row per cell type, or per cell type × donor, with an `n_cells` column (for example from a paper's supplementary table).
+- **New analysis code:** a separate block in `facs_vs_scrnaseq.py` (section "4b"). It loads the atlas, turns it into proportions with the same rule as my samples, runs the statistics, and saves 4 tables and 3 plots:
+
+  | Output | What it shows |
+  |---|---|
+  | `E1_atlas_proportions.png` | Each population per condition (FACS and scRNA-seq) next to the atlas donors, with the pooled atlas proportion as a dashed line. |
+  | `E2_atlas_composition_difference.png` | For each sample, the % of cells that would have to change population to match the atlas, compared with how much the atlas donors differ among themselves. |
+  | `E3_atlas_marker_profiles.png` | Marker patterns as heatmaps (atlas RNA vs Flex RNA vs FACS protein), each scaled 0–1, with the correlation to the atlas pattern. Needs a per-cell atlas with the gene columns. |
+  | `E_atlas_proportion_tests.csv` | Per population × method × condition: median vs atlas, difference, test and FDR q-value. With ≥ 3 atlas donors: Mann-Whitney U of my samples vs the atlas donors. Otherwise: one-sample Wilcoxon vs the atlas proportion. |
+  | `E_atlas_proportions.csv`, `E_atlas_composition_difference.csv`, `E_atlas_marker_profiles.csv` | The numbers behind the plots. |
+- **Website:**
+  - an optional "Reference atlas" upload field;
+  - an "Atlas labels" column in the settings table;
+  - a section E on the results page, with explanations of the question, the table columns and each plot.
+- **Demo data:** now also includes a made-up atlas of 8 healthy donors.
+
+**How it was checked:**
+- **No existing outputs changed.** All 14 existing plots and tables (sections A–D) were compared byte for byte with the version before the atlas was added, and all were identical.
+- **New tests:** 14 tests pass. The new ones check:
+  - an upload without an atlas skips section E with a message;
+  - an upload with an atlas shows all 7 E files;
+  - a summary-table atlas gives exactly the same proportions as the per-cell atlas it was made from, and skips the marker heatmap.
+
 ---
 
 ## How to use it
@@ -180,16 +211,22 @@ python -m pytest test_app.py -v
 
 ---
 
-## Input files (same as day03)
+## Input files (1–3 as in day03, 4 is new)
 
 1. **`metadata.csv`:** one row per sample, with `sample_id`, `facs_name` (the sample name as it appears in FlowJo) and any condition columns.
 2. **FlowJo export `.xlsx`:** one row per sample, with the count of each population gate and the median of each marker and imaging feature in each population.
 3. **`scrnaseq_cells.csv`:** one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy.
+4. **`reference_atlas.csv` (optional, new in day04):** a reference single-cell atlas of urine. Either:
+   - one row per cell, with `cell_type`, an optional `donor_id` and optional `PTPRC, MME, ANPEP, EPCAM` columns;
+   - or one row per cell type (× donor), with `cell_type`, an optional `donor_id` and `n_cells`.
+
+   Put the atlas cell-type names in `atlas_labels` in SETTINGS. The script's header comment has a snippet to export an atlas from Scanpy.
 
 ---
 
 ## Limitations and notes
 
-- **Placeholder settings:** I don't have real data yet. The channel names (`FLUOR1`–`4`), gate paths and imaging feature names are placeholders. Everything has only been tested on the made-up demo data.
+- **Placeholder settings:** I don't have real data yet. The channel names (`FLUOR1`–`4`), gate paths, imaging feature names and atlas labels are placeholders. Everything has only been tested on the made-up demo data.
+- **Comparing with an atlas:** an atlas is made with other protocols and is usually from healthy people. Small differences from it are expected, and differences in a disease condition can be biology rather than an error. The marker heatmap (E3) only compares patterns (which population is high or low), not absolute levels.
 - **Local use only:** the web app is meant to run on my own computer. It has no login, and runs are kept in `runs/` until I delete them.
 - **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition.

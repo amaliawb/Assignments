@@ -15,10 +15,14 @@ The program answers one question: **do two different lab methods count the same 
 
 The program reads both tables, puts them into the same shape, compares them with statistics, and draws plots.
 
+Optionally, you can add a third, independent source: a **reference single-cell atlas** of urine, a well-annotated dataset with known cell types (for example a published one). The program then also checks how both methods compare with that reference (section E).
+
 ```
  3 input files ──► 1. LOAD ──► 2. BUILD TABLES ──► 3. STATISTICS ──► 4. SAVE TABLES ──► 5. PLOTS
                   (read +       (count cells,       (compare methods     (.csv files)        (.png files)
                    check)        proportions)        and conditions)
+
+ + optional atlas ──► E. load atlas ──► atlas proportions ──► compare with FACS and Flex ──► E tables + plots
 ```
 
 There are two ways to use it, and both run **the same analysis code**:
@@ -183,6 +187,7 @@ These helpers are then used for the four questions of the analysis:
 | B | `condition_stats` | Does a population's proportion change between conditions, in each method? |
 | C | `protein_rna_stats` | Does antibody brightness follow RNA expression of the same gene? |
 | D | `imaging_between_populations` (+ `condition_stats`) | Do the populations look different in the images, and do the image features change between conditions? |
+| E | `atlas_comparison_stats` (+ `composition_difference`) | Do FACS and Flex look like the reference atlas? (only when an atlas is given, see below) |
 
 Writing the tests once as helpers and reusing them means every section is tested the same way. A fix in one place fixes it everywhere.
 
@@ -207,13 +212,39 @@ Each `plot_...` function draws one figure with matplotlib and saves it as a `.pn
 | `C1_protein_vs_rna.png` | Protein vs RNA for each marker |
 | `D1_imaging_features.png` | Imaging features per population and condition |
 
+### Optional step: comparing with a reference atlas (section E)
+
+All the atlas code is in **one separate block** of the file (section "4b"). Sections A–D don't use anything from it, so adding the atlas didn't change any of their results. It only runs when a file called `reference_atlas.csv` is in the data folder, or was uploaded on the website.
+
+**Why an atlas?** FACS and Flex are compared with each other in sections A–D. But if both had the same problem, for example a cell type that is always lost, they would still agree with each other. An atlas is an *independent* reference made by other people, so it can reveal problems that the two methods share.
+
+The steps mirror the main analysis:
+
+1. **`load_atlas(...)`** reads the atlas and gives every row a population, using `atlas_labels` from SETTINGS. This is the same idea as `seq_labels` for the notebook: a dictionary that translates names, e.g. `"Myeloid cell" → Immune`. An atlas can come in two shapes, and the program accepts both:
+   - one row per cell, so each row counts as 1 cell;
+   - a summary table with one row per cell type and an `n_cells` column saying how many cells that row stands for.
+2. **`build_atlas_proportions(...)`** counts cells per donor and population and divides them with **the same rule** as our samples. Proportions are only comparable if they are calculated the same way.
+3. **`atlas_comparison_stats(...)`** compares, for each population, method and condition, our samples with the atlas. Which test it uses depends on what the atlas contains:
+   - **3 or more atlas donors** → **Mann-Whitney U**, our samples vs the atlas donors. This takes into account that healthy people also differ from each other.
+   - **otherwise** → **one-sample Wilcoxon**: are our samples spread around the single atlas proportion?
+   - As everywhere, the p-values are FDR-corrected.
+4. **`composition_difference(...)`** gives every sample one number: the **percentage of cells that would have to change population** for the sample to look exactly like the atlas. It is half the sum of the differences over the four populations: 0% means identical, 100% means nothing in common. The atlas donors get the same score, which shows how big normal person-to-person variation is.
+5. **`build_marker_profiles(...)`** works out the typical level of each marker in each population from three sources: atlas RNA, Flex RNA and FACS protein. RNA and antibody brightness have different units, so each marker is **rescaled from 0 (lowest population) to 1 (highest)**. Only the *pattern* is compared, for example "CD45 is high only in immune cells".
+6. **`run_atlas_comparison(...)`** runs these steps in order, saves the tables and draws the three plots:
+
+| File | What it shows |
+|---|---|
+| `E1_atlas_proportions.png` | Our proportions per condition next to the atlas donors, with the atlas average as a dashed line |
+| `E2_atlas_composition_difference.png` | How far each sample's whole composition is from the atlas, compared with the atlas donors themselves |
+| `E3_atlas_marker_profiles.png` | Marker patterns as heatmaps: atlas RNA vs Flex RNA vs FACS protein (needs a per-cell atlas with gene columns) |
+
 ### Demo data
 
-**`make_demo_data(...)`** writes three made-up input files in exactly the right format: 10 samples, 5 Healthy and 5 Disease. It uses random numbers with a fixed "seed", so the demo data is the same every time. This lets you test the whole program before real data exists.
+**`make_demo_data(...)`** writes made-up input files in exactly the right format: 10 samples (5 Healthy and 5 Disease), plus a reference atlas of 8 healthy donors. It uses random numbers with a fixed "seed", so the demo data is the same every time. This lets you test the whole program before real data exists.
 
 ### Putting it together: `run_analysis(...)` and `main()`
 
-**`run_analysis(...)`** is the conductor. It calls steps 1 to 5 in order and returns the summary tables. It is the **one function both the terminal and the website use**.
+**`run_analysis(...)`** is the conductor. It calls steps 1 to 5 in order, then section E if an atlas file is there, and returns the summary tables. It is the **one function both the terminal and the website use**.
 
 **`main()`** is only for the terminal. It:
 1. reads the options you typed (`--demo`, `--condition-column`, `--conditions`)
@@ -252,6 +283,7 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 ### Important ideas in `app.py`
 
+- **Optional uploads.** The atlas upload field may be left empty. `upload()` then skips it, `run_analysis()` finds no atlas file, and the results page shows a short "no reference atlas was given" note in section E.
 - **A separate folder for every analysis.** Each upload gets a random ID (like `f7adccc8f906...`) and its own folder `runs/<id>/`, with `data/`, `results/` and `run.json` (the conditions you chose). Two analyses can never mix up their files.
 - **Errors become messages, not crashes.** When the analysis finds a problem, such as a missing column, it stops with an explanation. The helper `call_analysis(...)` catches that and shows the explanation on the page in red, so you can fix SETTINGS and try again.
 - **One analysis at a time.** A "lock" makes sure two analyses don't run at the same moment, because the plotting library isn't built for that.
@@ -272,7 +304,9 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 The tests are small programs that use the code and check the answers, like controls in an experiment. Run them with `python -m pytest test_app.py -v`. They check, among other things, that:
 
-- a full demo analysis writes all 14 result files;
+- a full demo analysis writes all 21 result files (14 for sections A–D and 7 for the atlas, section E);
+- without an atlas, section E is skipped with a message; with one, all its files appear;
+- an atlas given as a summary table gives exactly the same proportions as the per-cell atlas it was made from;
 - choosing only one condition skips the condition plot instead of failing;
 - the terminal command still works;
 - the website goes from upload → conditions → results → zip download;

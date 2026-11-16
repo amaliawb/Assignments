@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card">
   <h1>1. Upload your data</h1>
-  <p>The three files from the same samples. The script's comments describe each format.</p>
+  <p>The three files from the same samples, plus an optional reference atlas. The script's comments describe each format.</p>
   <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
     <label>Sample sheet <code>{{ uploads.metadata[0] }}</code>
       <input type="file" name="metadata" accept=".csv" required></label>
@@ -10,13 +10,17 @@
       <input type="file" name="facs" accept=".xlsx" required></label>
     <label>scRNA-seq cells <code>{{ uploads.seq[0] }}</code>
       <input type="file" name="seq" accept=".csv" required></label>
+    <label>Reference atlas <code>{{ uploads.atlas[0] }}</code> <span class="muted">(optional)</span>
+      <input type="file" name="atlas" accept=".csv"></label>
+    <p class="muted">The reference atlas is a single-cell dataset of urine with known cell types.
+       With it, section E compares your FACS and Flex results with the atlas. Without it, section E is skipped.</p>
     <button type="submit">Upload and continue</button>
   </form>
 </section>
 
 <section class="card">
   <h2>No data yet?</h2>
-  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease) and analyse that instead.</p>
+  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas of 8 healthy donors) and analyse that instead.</p>
   <form action="{{ url_for('upload') }}" method="post">
     <button type="submit" name="demo" value="1" class="secondary">Use demo data</button>
   </form>
@@ -26,9 +30,10 @@
   <h2>Current settings</h2>
   <p>These come from the SETTINGS section of <code>facs_vs_scrnaseq.py</code>. Edit them there and restart the app.</p>
   <table class="data">
-    <tr><th>Population</th><th>FlowJo gate</th><th>scRNA-seq labels</th></tr>
+    <tr><th>Population</th><th>FlowJo gate</th><th>scRNA-seq labels</th><th>Atlas labels</th></tr>
     {% for name, info in analysis.POPULATIONS.items() %}
-    <tr><td>{{ name }}</td><td><code>{{ info.gate }}</code></td><td>{{ info.seq_labels | join(", ") }}</td></tr>
+    <tr><td>{{ name }}</td><td><code>{{ info.gate }}</code></td><td>{{ info.seq_labels | join(", ") }}</td>
+        <td>{{ (info.atlas_labels or info.seq_labels) | join(", ") }}</td></tr>
     {% endfor %}
   </table>
   <table class="data">

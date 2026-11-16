@@ -89,6 +89,24 @@ SECTION_HELP = {
             "The feature names are set in SETTINGS (IMAGING_FEATURES) in facs_vs_scrnaseq.py.",
         ],
     },
+    "E": {
+        "question": "Do our FACS and Flex results look like an independent reference single-cell "
+                    "atlas of urine with known cell types?",
+        "notes": [
+            "The atlas cell types are translated to the same four populations (atlas_labels in "
+            "SETTINGS) and turned into proportions with the same rule as our samples.",
+            "The table compares each population, method and condition with the atlas. With 3 or more "
+            "atlas donors: Mann-Whitney U test of our samples vs the atlas donors. Otherwise: "
+            "Wilcoxon test of our samples vs the single atlas proportion.",
+            "A reference atlas is usually made from healthy people. Healthy samples that match the "
+            "atlas support the gating and the annotation; a disease condition that differs from it "
+            "may be biology.",
+            "If only ONE method differs from the atlas while the other matches it, suspect a "
+            "technical bias of that method (e.g. a cell type that sorts or sequences less well).",
+            "Atlases are made with other protocols (sample handling, chemistry, annotation), so "
+            "small differences are expected. Look for large, consistent ones.",
+        ],
+    },
 }
 
 # -----------------------------------------------------------------------------
@@ -116,6 +134,14 @@ COLUMN_HELP = {
     "p_value": "Uncorrected p-value.",
     "q_value_fdr": "p-value corrected for all tests in this table. Use this one.",
     "significant": "True if q_value_fdr is below 0.05.",
+    "group": "The condition of our samples that is compared with the atlas.",
+    "n_samples": "Number of our samples in this group.",
+    "median_samples": "Median proportion of this population in our samples (this method and condition).",
+    "atlas_proportion": "Proportion of this population in the atlas, with all atlas cells pooled.",
+    "difference": "median_samples minus atlas_proportion. Positive = our samples have MORE of this "
+                  "population than the atlas; 0.05 = 5 percentage points.",
+    "n_atlas_donors": "Number of atlas donors. With 3 or more, our samples are tested against the "
+                      "spread between donors; otherwise against the single pooled atlas proportion.",
 }
 
 # -----------------------------------------------------------------------------
@@ -195,5 +221,51 @@ PLOT_HELP = {
         "meaning": "Within one panel: does the feature change between conditions in that population? "
                    "Along one row: how different are the populations for that feature (compare the "
                    "y-axis numbers)?",
+    },
+    "E1_atlas_proportions.png": {
+        "title": "Proportions compared with the reference atlas",
+        "how": [
+            "One panel per population; our conditions on the x-axis, as in plot B1 "
+            "(dark grey = FACS, light grey = scRNA-seq, each dot = one sample).",
+            "The pink box on the right ('Atlas') shows the atlas donors, each pink dot = one donor "
+            "(only drawn when the atlas has more than one donor).",
+            "The pink dashed line is the atlas proportion with all atlas cells pooled.",
+        ],
+        "meaning": "Boxes around the dashed line, and overlapping the pink atlas box, mean our samples "
+                   "have a similar amount of this population as the reference. A box clearly above or "
+                   "below the line means more or fewer cells than in the atlas. Compare the two grey "
+                   "boxes: if only one of them is far from the atlas, that method may be biased.",
+    },
+    "E2_atlas_composition_difference.png": {
+        "title": "How different is each sample's whole composition from the atlas?",
+        "how": [
+            "Each dot is one sample (grey) or one atlas donor (pink).",
+            "y = composition difference: the percentage of cells that would have to change "
+            "population for that sample to look exactly like the pooled atlas. 0% = identical, "
+            "100% = nothing in common.",
+            "The pink 'Atlas donors' box shows how much reference individuals differ from their own "
+            "pooled atlas: this is the normal person-to-person variation.",
+        ],
+        "meaning": "Samples at about the same height as the atlas donors are as close to the atlas as "
+                   "healthy reference people are to each other. Samples clearly higher differ more "
+                   "than normal variation. Comparing FACS and scRNA-seq shows which method is closer "
+                   "to the reference.",
+    },
+    "E3_atlas_marker_profiles.png": {
+        "title": "Marker patterns: atlas RNA, Flex RNA and FACS protein",
+        "how": [
+            "Three heatmaps: the reference atlas (RNA), our Flex scRNA-seq (RNA) and our FACS (protein).",
+            "Rows = populations, columns = markers (CD45 = PTPRC, CD10 = MME, CD13 = ANPEP, "
+            "EpCAM = EPCAM). Darker = higher.",
+            "Each column is scaled from 0 (the population with the lowest level) to 1 (the highest), "
+            "separately in each heatmap, because RNA and antibody brightness have different units.",
+            "The titles give the Spearman correlation between that heatmap and the atlas heatmap. "
+            "Only drawn when the atlas has one row per cell with the four gene columns.",
+        ],
+        "meaning": "If the three heatmaps show the same pattern (e.g. CD45 dark only in immune, CD10/CD13 "
+                   "dark only in proximal tubule), our populations carry the same markers as the atlas "
+                   "cell types, which supports the gating and the annotation. A correlation close to 1 "
+                   "means the patterns match. A marker that is dark in a different population than in "
+                   "the atlas points to a gating or annotation problem.",
     },
 }

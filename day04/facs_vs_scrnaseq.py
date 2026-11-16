@@ -34,6 +34,11 @@ What the program produces (in the results folder):
      expression of its gene (CD45-PTPRC, CD10-MME, CD13-ANPEP, EpCAM-EPCAM)
   D. S8 IMAGING features per population: differences between populations
      and between conditions
+  E. REFERENCE ATLAS (optional): compare FACS and Flex with a published
+     single-cell atlas of urine with known cell types
+       - proportions of each population vs the atlas (per condition)
+       - how different each sample's whole composition is from the atlas
+       - marker patterns (atlas RNA vs Flex RNA vs FACS protein)
 
 -------------------------------------------------------------------------------
 HOW TO RUN
@@ -90,6 +95,27 @@ INPUT FILES
        export[genes] = expr.toarray() if hasattr(expr, "toarray") else expr
        export.index.name = "cell_barcode"
        export.to_csv("scrnaseq_cells.csv")
+
+4) reference_atlas.csv - OPTIONAL. A reference single-cell atlas of urine with
+   known cell types (e.g. a published dataset). If the file is not there,
+   section E is simply skipped. Two formats are accepted:
+     a) one row per cell (like file 3):
+           cell_type, donor_id (optional), PTPRC, MME, ANPEP, EPCAM (optional)
+        -> gives proportions AND the marker comparison (plot E3)
+     b) one row per cell type (or per cell type x donor), e.g. from a paper's
+        supplementary table:
+           cell_type, donor_id (optional), n_cells
+        -> gives proportions only
+   The atlas cell-type names are translated to the populations with
+   "atlas_labels" in POPULATIONS (SETTINGS). With a donor_id column, the
+   variation between atlas donors is used in the statistics.
+   Export from a Scanpy atlas object like this (keep only the columns you have):
+
+       genes = ["PTPRC", "MME", "ANPEP", "EPCAM"]
+       export = atlas.obs[["cell_type", "donor_id"]].copy()
+       expr = atlas[:, genes].X        # log-normalized values, as for file 3
+       export[genes] = expr.toarray() if hasattr(expr, "toarray") else expr
+       export.to_csv("reference_atlas.csv", index=False)
 """
 
 # -----------------------------------------------------------------------------
@@ -124,6 +150,14 @@ SAMPLE_COLUMN = "sample_id"      # the sample ID shared by metadata and scRNA-se
 FACS_NAME_COLUMN = "facs_name"   # the sample name as FlowJo writes it
 CELL_TYPE_COLUMN = "cell_type"   # the annotation label of each sequenced cell
 
+# ---- Reference atlas (optional, section E) -----------------------------------
+# Put the atlas file in the data folder (or upload it on the website). If it is
+# missing, section E is skipped and everything else runs as before.
+ATLAS_FILE = "reference_atlas.csv"
+ATLAS_CELL_TYPE_COLUMN = "cell_type"   # column with the atlas' cell-type names
+ATLAS_DONOR_COLUMN = "donor_id"        # optional: which atlas donor/sample each row comes from
+ATLAS_COUNT_COLUMN = "n_cells"         # optional: number of cells in the row (summary-table format)
+
 # ---- FlowJo column-name templates --------------------------------------------
 # FlowJo names a statistic column "<gate path> | <statistic>".
 # {gate} is replaced by a gate path below, {parameter} by a channel/feature name.
@@ -154,26 +188,34 @@ FACS_TOTAL_GATE = LIVE_GATE
 # "gate"       : the FlowJo gate path of the population
 # "seq_labels" : which cell_type labels from your notebook belong to this
 #                population (list ALL the labels you used, e.g. every immune subtype)
+# "atlas_labels": which cell_type names of the REFERENCE ATLAS belong to this
+#                population (an atlas usually names cell types differently from
+#                your notebook). If left out, the seq_labels are used.
+#                These are placeholders - copy the real names from your atlas.
 # The four gates do not overlap and together cover every live cell, so each
 # cell is counted exactly once (like in scRNA-seq, where each cell has one label).
 POPULATIONS = {
     "Immune": {
         "gate": f"{LIVE_GATE}/CD45+",
         "seq_labels": ["T cell", "Macrophage", "Neutrophil"],
+        "atlas_labels": ["T/NK cell", "Myeloid cell", "Neutrophil"],
     },
     "Proximal tubule": {
         "gate": f"{CD45_NEG_GATE}/CD10+ CD13+",
         "seq_labels": ["Proximal tubule cell"],
+        "atlas_labels": ["Proximal tubule"],
     },
     "Epithelial": {
         "gate": f"{NOT_PT_GATE}/EpCAM+",
         "seq_labels": ["Urothelial cell", "Squamous epithelial cell"],
+        "atlas_labels": ["Urothelial", "Squamous"],
     },
     "Other CD45-": {
         "gate": f"{NOT_PT_GATE}/EpCAM-",
         # Placeholder labels: every notebook label that is not immune, not proximal
         # tubule and not EpCAM+ epithelial (e.g. podocytes, fibroblasts)
         "seq_labels": ["Podocyte", "Fibroblast"],
+        "atlas_labels": ["Podocyte", "Fibroblast"],
     },
 }
 
@@ -215,14 +257,16 @@ ALPHA = 0.05                  # significance threshold applied to FDR-corrected 
 # One color per population (same order as POPULATIONS), plus one per method.
 POPULATION_COLORS = ["#2a78d6", "#1baf7a", "#eb6834", "#8a63d2"]
 METHOD_COLORS = {"FACS": "#52514e", "scRNA-seq": "#b5b3ad"}
+ATLAS_COLOR = "#c2477a"       # the reference atlas in the section E plots
 PLOT_DPI = 200                # image resolution (dots per inch) of the saved plots
 
 
 # =============================================================================
 # 1. LOADING THE DATA
 # =============================================================================
-# These functions read the three input files, check that the expected columns
-# are there, and match the samples between the files.
+# These functions read the three main input files, check that the expected columns
+# are there, and match the samples between the files. (The optional reference
+# atlas is read separately, in section 4b.)
 
 def get_column(table, column, file_label):
     """Return one column of a table; if it does not exist, stop and list the real column names."""
@@ -861,6 +905,329 @@ def plot_imaging(imaging, condition_column, conditions):
 
 
 # =============================================================================
+# 4b. REFERENCE ATLAS COMPARISON (section E - optional)
+# =============================================================================
+# Everything for section E is in this block: reading the atlas, building its
+# tables, the statistics and the three E plots. It only runs when an atlas file
+# is given; the sections A-D above do not use anything from here.
+#
+# The idea: a reference atlas is an independent, well-annotated single-cell
+# dataset of urine. If our FACS and Flex results look like the atlas, that
+# supports our gating and annotation; where they differ, it shows either a
+# biological effect (e.g. a disease condition) or a technical bias of a method.
+
+ATLAS_SOURCES = ["Atlas RNA", "Flex RNA", "FACS protein"]   # the three panels of plot E3
+
+
+def load_atlas(path):
+    """
+    Read the reference atlas and give every row a 'population', using
+    POPULATIONS[...]["atlas_labels"] (or the seq_labels if none are given).
+    Adds a "cells_in_row" column: 1 per row for a per-cell file, or the number from
+    ATLAS_COUNT_COLUMN for a summary table. Labels not listed become 'Other'.
+    """
+    # Read the file; cell types and donors stay text
+    atlas = pd.read_csv(path, dtype={ATLAS_CELL_TYPE_COLUMN: str, ATLAS_DONOR_COLUMN: str})
+    get_column(atlas, ATLAS_CELL_TYPE_COLUMN, path.name)
+
+    # Dictionary: atlas label -> population, e.g. "Myeloid cell" -> "Immune"
+    label_to_population = {
+        label: population
+        for population, info in POPULATIONS.items()
+        for label in info.get("atlas_labels", info["seq_labels"])
+    }
+    atlas["population"] = atlas[ATLAS_CELL_TYPE_COLUMN].map(label_to_population).fillna("Other")
+
+    # How many cells each row stands for: 1 (per-cell file) or the count column (summary table)
+    if ATLAS_COUNT_COLUMN in atlas.columns:
+        atlas["cells_in_row"] = pd.to_numeric(atlas[ATLAS_COUNT_COLUMN], errors="coerce").fillna(0)
+    else:
+        atlas["cells_in_row"] = 1
+
+    # No donor column: treat the whole atlas as a single reference group
+    if ATLAS_DONOR_COLUMN not in atlas.columns:
+        atlas[ATLAS_DONOR_COLUMN] = "atlas"
+
+    # Tell the user which atlas labels were not assigned to a population
+    unmapped = sorted(atlas.loc[atlas["population"] == "Other", ATLAS_CELL_TYPE_COLUMN].unique())
+    if unmapped:
+        print(f"Note: these atlas cell types are not in any population (counted as 'Other'): {unmapped}")
+    print(f"Loaded reference atlas: {int(atlas['cells_in_row'].sum())} cells "
+          f"from {atlas[ATLAS_DONOR_COLUMN].nunique()} donor(s).")
+    return atlas
+
+
+def build_atlas_proportions(atlas):
+    """
+    One row per atlas donor x population: cell count, the total it is divided
+    by, and the proportion. Uses the same PROPORTION_DENOMINATOR rule as our own
+    samples, so the numbers can be compared directly.
+    """
+    populations = list(POPULATIONS)
+    # Count table: rows = donors, columns = populations (+ Other), values = number of cells
+    counts = atlas.pivot_table(index=ATLAS_DONOR_COLUMN, columns="population",
+                               values="cells_in_row", aggfunc="sum", fill_value=0)
+    counts = counts.reindex(columns=populations + ["Other"], fill_value=0)
+    # Same denominator rule as build_proportions()
+    if PROPORTION_DENOMINATOR == "populations":
+        total = counts[populations].sum(axis=1)
+    else:
+        total = counts.sum(axis=1)
+
+    rows = []
+    for donor in counts.index:
+        for pop in populations:
+            rows.append({
+                "donor": donor,
+                "population": pop,
+                "count": counts.loc[donor, pop],
+                "total": total[donor],
+                "proportion": counts.loc[donor, pop] / total[donor] if total[donor] > 0 else np.nan,
+            })
+    return pd.DataFrame(rows)
+
+
+def atlas_pooled_proportions(atlas_props):
+    """The atlas proportion of each population with all atlas cells pooled together."""
+    # Add up counts and totals over all donors, then divide
+    sums = atlas_props.groupby("population", sort=False)[["count", "total"]].sum()
+    return (sums["count"] / sums["total"].where(sums["total"] > 0)).reindex(list(POPULATIONS))
+
+
+def atlas_comparison_stats(proportions, atlas_props, condition_column, conditions):
+    """
+    Section E: for every population x method x condition, compare our sample
+    proportions with the atlas.
+      - atlas with >= MIN_SAMPLES_PER_GROUP donors:
+            Mann-Whitney U test, our samples vs the atlas donors
+            (takes into account that healthy people also differ from each other)
+      - otherwise (atlas without donors, or too few):
+            one-sample Wilcoxon test: are our samples centred on the atlas proportion?
+    FDR correction is applied over the whole table.
+    """
+    pooled = atlas_pooled_proportions(atlas_props)
+    rows = []
+    for pop in POPULATIONS:
+        # The proportion of this population in every atlas donor
+        donors = atlas_props.loc[atlas_props["population"] == pop, "proportion"].dropna().values
+        for method in ["FACS", "scRNA-seq"]:
+            for group in conditions:
+                # Our samples of this method and condition
+                values = proportions.loc[(proportions["population"] == pop) &
+                                         (proportions["method"] == method) &
+                                         (proportions[condition_column] == group), "proportion"].dropna().values
+                median = np.median(values) if len(values) else np.nan
+                row = {"population": pop, "method": method, "group": group,
+                       "n_samples": len(values), "median_samples": median,
+                       "atlas_proportion": pooled[pop],
+                       "atlas_donor_median": np.median(donors) if len(donors) else np.nan,
+                       "difference": median - pooled[pop],       # positive = more than in the atlas
+                       "n_atlas_donors": len(donors),
+                       "test": "", "statistic": np.nan, "p_value": np.nan}
+                # Choose the test depending on how many atlas donors there are
+                if len(donors) >= MIN_SAMPLES_PER_GROUP and len(values) >= MIN_SAMPLES_PER_GROUP:
+                    row["test"] = "Mann-Whitney U vs atlas donors"
+                    row["statistic"], row["p_value"] = stats.mannwhitneyu(values, donors, alternative="two-sided")
+                elif (len(values) >= MIN_SAMPLES_PER_GROUP and not np.isnan(pooled[pop])
+                      and np.any(values != pooled[pop])):
+                    row["test"] = "Wilcoxon vs atlas proportion"
+                    row["statistic"], row["p_value"] = stats.wilcoxon(values - pooled[pop])
+                rows.append(row)
+    table = pd.DataFrame(rows)
+    # Correct for all tests in the table, then flag the significant ones
+    table["q_value_fdr"] = fdr_correct(table["p_value"])
+    table["significant"] = table["q_value_fdr"] < ALPHA
+    return table
+
+
+def composition_difference(proportions, atlas_props, condition_column):
+    """
+    Section E: how different is each sample's WHOLE composition from the atlas?
+      composition difference = half the sum of |sample proportion - atlas proportion|
+                               over all populations
+    This is the fraction of cells that would have to change population for the
+    sample to look exactly like the atlas (0 = identical, 1 = nothing in common).
+    The atlas donors are scored as well (each donor vs the pooled atlas), to show
+    how much reference individuals differ among themselves.
+    """
+    pooled = atlas_pooled_proportions(atlas_props)
+    rows = []
+    # Our samples: one score per sample and method
+    for (sample, method, group), part in proportions.groupby([SAMPLE_COLUMN, "method", condition_column], sort=False):
+        p = part.set_index("population")["proportion"].reindex(pooled.index)
+        rows.append({"sample": sample, "method": method, "group": group,
+                     "composition_difference": 0.5 * np.abs(p - pooled).sum(min_count=1)})
+    # The atlas donors (only meaningful if there is more than one)
+    if atlas_props["donor"].nunique() > 1:
+        for donor, part in atlas_props.groupby("donor", sort=False):
+            p = part.set_index("population")["proportion"].reindex(pooled.index)
+            rows.append({"sample": donor, "method": "Atlas donor", "group": "Atlas",
+                         "composition_difference": 0.5 * np.abs(p - pooled).sum(min_count=1)})
+    return pd.DataFrame(rows)
+
+
+def build_marker_profiles(atlas, cells, protein_rna):
+    """
+    Section E: the typical level of each marker in each population, from three sources:
+      Atlas RNA    : mean expression of the gene in the atlas cells
+      Flex RNA     : mean expression of the gene in our sequenced cells
+      FACS protein : median (over samples) of the antibody's median intensity
+    The three sources use different units, so inside each source every marker is
+    scaled 0-1 across the populations (0 = lowest population, 1 = highest).
+    Only the PATTERN is compared: which population is high or low for a marker.
+    Returns None when the atlas has no per-cell gene columns.
+    """
+    genes = [m["gene"] for m in MARKERS.values()]
+    # Needs a per-cell atlas with all four gene columns
+    if ATLAS_COUNT_COLUMN in atlas.columns or not all(g in atlas.columns for g in genes):
+        print("Note: the atlas has no per-cell marker gene columns - the marker comparison (E3) is skipped.")
+        return None
+    populations = list(POPULATIONS)
+    # Average gene expression per population in the atlas and in our Flex data
+    atlas_means = atlas[atlas["population"].isin(populations)].groupby("population")[genes].mean()
+    seq_means = cells[cells["population"].isin(populations)].groupby("population")[genes].mean()
+    # Typical FACS intensity per population and marker (median over samples)
+    facs_medians = protein_rna.groupby(["population", "marker"])["protein_median"].median()
+
+    rows = []
+    for marker, info in MARKERS.items():
+        for pop in populations:
+            for source, value in [("Atlas RNA", atlas_means[info["gene"]].get(pop, np.nan)),
+                                  ("Flex RNA", seq_means[info["gene"]].get(pop, np.nan)),
+                                  ("FACS protein", facs_medians.get((pop, marker), np.nan))]:
+                rows.append({"source": source, "marker": marker, "gene": info["gene"],
+                             "population": pop, "value": value})
+    table = pd.DataFrame(rows)
+    # Scale 0-1 inside each source x marker: (value - lowest) / (highest - lowest)
+    grouped = table.groupby(["source", "marker"])["value"]
+    low, high = grouped.transform("min"), grouped.transform("max")
+    table["scaled"] = ((table["value"] - low) / (high - low)).where(high > low)
+    return table
+
+
+def plot_atlas_proportions(proportions, atlas_props, condition_column, conditions):
+    """
+    E1: one panel per population. Our samples per condition (FACS and scRNA-seq
+    boxes, as in B1), the atlas donors as an extra box, and a dashed line at the
+    pooled atlas proportion.
+    """
+    pooled = atlas_pooled_proportions(atlas_props)
+    has_donors = atlas_props["donor"].nunique() > 1
+    groups = list(conditions) + (["Atlas"] if has_donors else [])
+    fig, axes = plt.subplots(1, len(POPULATIONS),
+                             figsize=(max(4, 1.6 * len(groups)) * len(POPULATIONS) / 1.3, 4))
+    for ax, pop in zip(np.atleast_1d(axes), POPULATIONS):
+        part = proportions[proportions["population"] == pop]
+        # Our samples: FACS box slightly left, scRNA-seq box slightly right of each condition
+        for k, method in enumerate(["FACS", "scRNA-seq"]):
+            data = [part[(part["method"] == method) & (part[condition_column] == c)]["proportion"]
+                    for c in conditions]
+            positions = [i + (k - 0.5) * 0.4 for i in range(len(conditions))]
+            boxplot_with_points(ax, data, positions, METHOD_COLORS[method])
+            ax.scatter([], [], color=METHOD_COLORS[method], s=22, label=method)  # legend entry
+        # The atlas donors as their own box at the right
+        if has_donors:
+            donors = atlas_props.loc[atlas_props["population"] == pop, "proportion"]
+            boxplot_with_points(ax, [donors], [len(conditions)], ATLAS_COLOR)
+            ax.scatter([], [], color=ATLAS_COLOR, s=22, label="Atlas donors")
+        # The pooled atlas proportion as a reference line across the panel
+        ax.axhline(pooled[pop], color=ATLAS_COLOR, linewidth=1.2, linestyle="--", label="Atlas (all cells)")
+        ax.set_xticks(range(len(groups)), groups)
+        ax.set_title(pop, loc="left")
+        ax.set_ylabel("Proportion of cells")
+    np.atleast_1d(axes)[-1].legend(loc="upper left", bbox_to_anchor=(1, 1))
+    save(fig, "E1_atlas_proportions.png")
+
+
+def plot_atlas_difference(differences, conditions):
+    """E2: composition difference from the atlas per sample (in %), per condition and method."""
+    fig, ax = plt.subplots(figsize=(max(5, 1.8 * (len(conditions) + 1)), 4))
+    # Our samples, FACS and scRNA-seq side by side for each condition
+    for k, method in enumerate(["FACS", "scRNA-seq"]):
+        data = [differences[(differences["method"] == method) &
+                            (differences["group"] == c)]["composition_difference"] * 100
+                for c in conditions]
+        positions = [i + (k - 0.5) * 0.4 for i in range(len(conditions))]
+        boxplot_with_points(ax, data, positions, METHOD_COLORS[method])
+        ax.scatter([], [], color=METHOD_COLORS[method], s=22, label=method)  # legend entry
+    # The atlas donors: how much reference individuals differ from the pooled atlas
+    groups = list(conditions)
+    donors = differences[differences["method"] == "Atlas donor"]["composition_difference"] * 100
+    if len(donors) > 0:
+        boxplot_with_points(ax, [donors], [len(conditions)], ATLAS_COLOR)
+        ax.scatter([], [], color=ATLAS_COLOR, s=22, label="Atlas donors")
+        groups.append("Atlas donors")
+    ax.set_xticks(range(len(groups)), groups)
+    ax.set_ylim(bottom=0)
+    ax.set_ylabel("Composition difference from atlas (%)")
+    ax.set_title("How different is each sample from the reference atlas?", loc="left")
+    ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    save(fig, "E2_atlas_composition_difference.png")
+
+
+def plot_marker_profiles(profiles):
+    """
+    E3: three heatmaps side by side (atlas RNA, Flex RNA, FACS protein).
+    Rows = populations, columns = markers, color = scaled level (0-1).
+    The titles give the Spearman correlation of each pattern with the atlas pattern.
+    """
+    markers, pops = list(MARKERS), list(POPULATIONS)
+    # Three heatmap panels + one narrow panel for the color scale
+    fig, axes = plt.subplots(1, 4, figsize=(3.2 * 3 + 1.2, 0.55 * len(pops) + 2.2),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 0.07]})
+    atlas_scaled = (profiles[profiles["source"] == "Atlas RNA"]
+                    .set_index(["population", "marker"])["scaled"])
+    for i, (ax, source) in enumerate(zip(axes[:3], ATLAS_SOURCES)):
+        part = profiles[profiles["source"] == source]
+        grid = part.pivot(index="population", columns="marker", values="scaled").reindex(index=pops, columns=markers)
+        image = ax.imshow(grid.values, cmap="RdPu", vmin=0, vmax=1, aspect="auto")
+        # Write the value in every cell (dark text on light cells, white on dark cells)
+        for r in range(len(pops)):
+            for c in range(len(markers)):
+                value = grid.values[r, c]
+                ax.text(c, r, "–" if np.isnan(value) else f"{value:.2f}", ha="center", va="center",
+                        fontsize=8, color="white" if value > 0.6 else "#2e2228")
+        ax.set_xticks(range(len(markers)), markers)
+        ax.set_yticks(range(len(pops)), pops if i == 0 else [])
+        ax.grid(False)
+        # Compare this pattern with the atlas pattern (same population x marker cells)
+        title = source
+        if source != "Atlas RNA":
+            this = part.set_index(["population", "marker"])["scaled"].reindex(atlas_scaled.index)
+            r_value = correlate(atlas_scaled.values, this.values)["spearman_r"]
+            title += f"\nSpearman r vs atlas = {r_value:.2f}"
+        ax.set_title(title, loc="left")
+    fig.colorbar(image, cax=axes[3], label="Scaled level (0 = lowest, 1 = highest)")
+    save(fig, "E3_atlas_marker_profiles.png")
+
+
+def run_atlas_comparison(atlas_path, proportions, cells, protein_rna, condition_column, conditions):
+    """
+    Section E from start to end: load the atlas, build the tables, run the
+    statistics, save the tables and draw the plots. Returns the test table.
+    """
+    atlas = load_atlas(atlas_path)
+    atlas_props = build_atlas_proportions(atlas)
+    tests = atlas_comparison_stats(proportions, atlas_props, condition_column, conditions)
+    differences = composition_difference(proportions, atlas_props, condition_column)
+    profiles = build_marker_profiles(atlas, cells, protein_rna)
+
+    # Tables
+    atlas_props.to_csv(OUTPUT_DIR / "E_atlas_proportions.csv", index=False)
+    tests.to_csv(OUTPUT_DIR / "E_atlas_proportion_tests.csv", index=False)
+    differences.to_csv(OUTPUT_DIR / "E_atlas_composition_difference.csv", index=False)
+    if profiles is not None:
+        profiles.to_csv(OUTPUT_DIR / "E_atlas_marker_profiles.csv", index=False)
+
+    # Plots
+    plot_atlas_proportions(proportions, atlas_props, condition_column, conditions)
+    plot_atlas_difference(differences, conditions)
+    if profiles is not None:
+        plot_marker_profiles(profiles)
+    return tests
+
+
+# =============================================================================
 # 5. DEMO DATA (only used with --demo)
 # =============================================================================
 # Makes realistic-looking fake input files so the whole program can be tested
@@ -936,10 +1303,30 @@ def make_demo_data(folder):
             cells[info["gene"]] = np.clip(rng.normal(mean, 0.5), 0, None).round(3)
         cell_tables.append(cells)
 
-    # Write the three files in the same formats as the real inputs
+    # --- Reference atlas: 8 healthy donors with known cell types (per-cell format) ---
+    # Made after the sample data, so the three files above are the same as before.
+    atlas_tables = []
+    for d in range(1, 9):
+        # Healthy-like composition with donor-to-donor variation, plus a few unassigned cells
+        fraction = rng.dirichlet(np.append(typical_fraction["Healthy"], 0.03) * 50)
+        n_atlas = int(rng.integers(1500, 4000))
+        atlas_pop = rng.choice(pops + ["Other"], size=n_atlas, p=fraction)
+        # Atlas names for the cell types (they differ from the notebook labels)
+        labels = [rng.choice(POPULATIONS[p].get("atlas_labels", POPULATIONS[p]["seq_labels"]))
+                  if p != "Other" else "Unknown" for p in atlas_pop]
+        atlas = pd.DataFrame({ATLAS_DONOR_COLUMN: f"D{d:02d}", ATLAS_CELL_TYPE_COLUMN: labels})
+        # Marker genes with the same population pattern as in our Flex data
+        for marker, info in MARKERS.items():
+            mean = np.array([np.log1p(protein_level[p][marker] / 1500) if p != "Other" else 0.3
+                             for p in atlas_pop])
+            atlas[info["gene"]] = np.clip(rng.normal(mean, 0.5), 0, None).round(3)
+        atlas_tables.append(atlas)
+
+    # Write the files in the same formats as the real inputs
     metadata.to_csv(folder / METADATA_FILE, index=False)
     pd.DataFrame(facs_rows).to_excel(folder / FACS_FILE, index=False)
     pd.concat(cell_tables).to_csv(folder / SEQ_FILE, index=False)
+    pd.concat(atlas_tables).to_csv(folder / ATLAS_FILE, index=False)
     print(f"Demo data written to {folder}")
 
 
@@ -951,7 +1338,8 @@ def make_demo_data(folder):
 
 def run_analysis(data_dir, output_dir, condition_column=None, conditions=None):
     """
-    Run steps 1-5 on the three input files in data_dir and write every table and
+    Run steps 1-5 on the input files in data_dir (+ section E if an atlas file is
+    there) and write every table and
     plot to output_dir. Used by the command line (main, below) and by the web
     interface (app.py). If condition_column or conditions is None, the user is
     asked in the terminal. Returns the summary tables so the caller can show them.
@@ -1012,8 +1400,19 @@ def run_analysis(data_dir, output_dir, condition_column=None, conditions=None):
         imaging_cond.to_csv(OUTPUT_DIR / "D_imaging_tests_between_conditions.csv", index=False)
         plot_imaging(imaging, condition_column, conditions)
 
+    # --- Section E: comparison with the reference atlas (skipped if no atlas file) ---
+    atlas_tests = None
+    atlas_path = data_dir / ATLAS_FILE
+    if atlas_path.exists():
+        print("\nComparing with the reference atlas ...")
+        atlas_tests = run_atlas_comparison(atlas_path, proportions, cells, protein_rna,
+                                           condition_column, conditions)
+    else:
+        print(f"\nNo reference atlas ({ATLAS_FILE}) found - section E skipped.")
+
     # Hand the main results back to whoever called this (terminal or web app)
     return {
+        "atlas_tests": atlas_tests,
         "condition_column": condition_column,
         "conditions": conditions,
         "n_facs_samples": len(facs),
@@ -1058,6 +1457,12 @@ def main():
         if not hits.empty:
             print(hits[["population", "method", "test", "comparison", "q_value_fdr"]]
                   .round(4).to_string(index=False))
+    # Comparison with the reference atlas (section E), if an atlas was given
+    atlas_tests = results["atlas_tests"]
+    if atlas_tests is not None:
+        print("\nProportions compared with the reference atlas (median of samples vs atlas):")
+        print(atlas_tests[["population", "method", "group", "median_samples", "atlas_proportion",
+                           "q_value_fdr", "significant"]].round(3).to_string(index=False))
     print("\nDone.")
 
 

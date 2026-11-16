@@ -6,7 +6,8 @@ Web interface for facs_vs_scrnaseq.py.
 
 All the "business logic" (loading the files, building the tables, the
 statistics and the plots) stays in facs_vs_scrnaseq.py. This file only:
-  1. receives the three input files through an upload form (or makes demo data)
+  1. receives the three input files (+ an optional reference atlas) through an
+     upload form (or makes demo data)
   2. lets you pick the condition column and conditions with checkboxes
      (instead of typing numbers in the terminal)
   3. calls run_analysis() from facs_vs_scrnaseq.py
@@ -55,12 +56,15 @@ APP_DIR = Path(__file__).resolve().parent
 RUNS_DIR = APP_DIR / "runs"           # one sub-folder per analysis
 MAX_UPLOAD_MB = 500                   # largest total upload accepted
 
-# The three upload fields: form field name -> (file name the analysis expects, allowed extension)
+# The upload fields (three required + the optional atlas): form field name -> (file name the analysis expects, allowed extension)
 UPLOADS = {
     "metadata": (analysis.METADATA_FILE, ".csv"),
     "facs": (analysis.FACS_FILE, ".xlsx"),
     "seq": (analysis.SEQ_FILE, ".csv"),
+    "atlas": (analysis.ATLAS_FILE, ".csv"),
 }
+# Upload fields that may be left empty (without an atlas, section E is skipped)
+OPTIONAL_UPLOADS = {"atlas"}
 
 # Headings for the plots and tables, by the letter their file name starts with
 SECTIONS = {
@@ -68,6 +72,7 @@ SECTIONS = {
     "B": "B. Proportions between conditions",
     "C": "C. Protein vs RNA",
     "D": "D. S8 imaging features",
+    "E": "E. Comparison with the reference atlas",
 }
 
 app = Flask(__name__)
@@ -165,6 +170,8 @@ def upload():
         for field, (file_name, extension) in UPLOADS.items():
             file = request.files.get(field)
             if not file or not file.filename:
+                if field in OPTIONAL_UPLOADS:
+                    continue          # optional file not given: its section is skipped
                 shutil.rmtree(folder)
                 flash(f"Please choose a file for '{file_name}'.")
                 return redirect(url_for("index"))
@@ -250,6 +257,9 @@ def results(run_id):
               ["marker", "n", "spearman_r", "spearman_q_fdr", "pearson_r", "pearson_q_fdr"]),
         "D": (read_result(results_dir, "D_imaging_tests_between_populations.csv"),
               ["feature", "test", "comparison", "p_value", "q_value_fdr", "significant"]),
+        "E": (read_result(results_dir, "E_atlas_proportion_tests.csv"),
+              ["population", "method", "group", "n_samples", "median_samples", "atlas_proportion",
+               "difference", "n_atlas_donors", "test", "q_value_fdr", "significant"]),
     }
     n_significant = int(by_condition["significant"].sum()) if by_condition is not None else 0
 

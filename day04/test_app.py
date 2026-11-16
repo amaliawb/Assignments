@@ -27,7 +27,11 @@ EXPECTED_FILES = [
     "C1_protein_vs_rna.png", "C_protein_vs_rna.csv", "C_protein_vs_rna_stats.csv",
     "D1_imaging_features.png", "D_imaging_features.csv",
     "D_imaging_tests_between_conditions.csv", "D_imaging_tests_between_populations.csv",
+    "E1_atlas_proportions.png", "E2_atlas_composition_difference.png", "E3_atlas_marker_profiles.png",
+    "E_atlas_composition_difference.csv", "E_atlas_marker_profiles.csv",
+    "E_atlas_proportion_tests.csv", "E_atlas_proportions.csv",
 ]
+ATLAS_FILES = [f for f in EXPECTED_FILES if f.startswith("E")]
 
 
 @pytest.fixture
@@ -105,7 +109,7 @@ def test_demo_run_end_to_end(client):
     for name in EXPECTED_FILES:
         assert name in page
     # every section has its question, and every plot has a "how to read it" explanation
-    assert page.count("<b>Question:</b>") == 4
+    assert page.count("<b>Question:</b>") == 5
     assert page.count("How to read it") == len([f for f in EXPECTED_FILES if f.endswith(".png")])
     assert all(plot in web.explanations.PLOT_HELP for plot in EXPECTED_FILES if plot.endswith(".png"))
     assert client.get(f"/run/{run_id}/file/A1_proportions_stacked.png").mimetype == "image/png"
@@ -128,6 +132,46 @@ def test_upload_own_files(client, demo_data):
     client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
     page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
     assert "Healthy, Disease" in page
+    # the atlas is optional: without it section E is skipped with a message
+    assert "No reference atlas was given" in page
+    assert not any(name in page for name in ATLAS_FILES)
+
+
+def test_upload_own_files_with_atlas(client, demo_data):
+    files = {
+        "metadata": (open(demo_data / "metadata.csv", "rb"), "my_samples.csv"),
+        "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx"),
+        "seq": (open(demo_data / "scrnaseq_cells.csv", "rb"), "cells.csv"),
+        "atlas": (open(demo_data / "reference_atlas.csv", "rb"), "urine_atlas.csv"),
+    }
+    response = client.post("/upload", data=files, content_type="multipart/form-data")
+    run_id = response.headers["Location"].rstrip("/").split("/")[-1]
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    for name in ATLAS_FILES:
+        assert name in page
+    assert "No reference atlas was given" not in page
+
+
+def test_atlas_summary_table_gives_same_proportions(demo_data, tmp_path):
+    # Turn the per-cell demo atlas into a summary table (cell type x donor -> n_cells)
+    cells = pd.read_csv(demo_data / analysis.ATLAS_FILE)
+    summary = (cells.groupby([analysis.ATLAS_DONOR_COLUMN, analysis.ATLAS_CELL_TYPE_COLUMN])
+               .size().rename(analysis.ATLAS_COUNT_COLUMN).reset_index())
+    summary.to_csv(tmp_path / "summary_atlas.csv", index=False)
+
+    per_cell = analysis.build_atlas_proportions(analysis.load_atlas(demo_data / analysis.ATLAS_FILE))
+    from_summary = analysis.build_atlas_proportions(analysis.load_atlas(tmp_path / "summary_atlas.csv"))
+    pd.testing.assert_series_equal(per_cell["proportion"], from_summary["proportion"])
+
+    # A summary table has no gene values, so the marker comparison (E3) is skipped
+    (demo_data / analysis.ATLAS_FILE).unlink()
+    (tmp_path / "summary_atlas.csv").rename(demo_data / analysis.ATLAS_FILE)
+    out = tmp_path / "results"
+    analysis.run_analysis(demo_data, out, "condition", ["Healthy", "Disease"])
+    made = {p.name for p in out.iterdir()}
+    assert "E1_atlas_proportions.png" in made and "E2_atlas_composition_difference.png" in made
+    assert "E3_atlas_marker_profiles.png" not in made
 
 
 def test_missing_file_is_reported(client, demo_data):
