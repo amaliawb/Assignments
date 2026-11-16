@@ -85,7 +85,7 @@ def test_command_line_still_works(tmp_path):
 def test_start_page_shows_upload_form_and_settings(client):
     page = client.get("/").get_data(as_text=True)
     assert 'type="file" name="facs"' in page
-    assert "Proximal tubule" in page and "PTPRC" in page
+    assert "Proximal tubule" in page and "Other CD45-" in page and "PTPRC" in page
 
 
 def test_demo_run_end_to_end(client):

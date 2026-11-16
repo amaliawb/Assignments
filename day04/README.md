@@ -5,7 +5,7 @@ In [day03](../day03) I built a command-line program, `facs_vs_scrnaseq.py`. It c
 - **BD FACSDiscover S8 sorting**, gated in FlowJo
 - **10x Flex single-cell RNA-seq**
 
-The populations are immune cells (CD45⁺), epithelial cells (CD45⁻ EpCAM⁺) and proximal tubule cells (CD45⁻ CD10⁺ CD13⁺).
+The populations are immune cells (CD45⁺), proximal tubule cells (CD45⁻ CD10⁺ CD13⁺), epithelial cells (CD45⁻ NOT CD10⁺CD13⁺, EpCAM⁺) and other CD45⁻ cells (CD45⁻ NOT CD10⁺CD13⁺, EpCAM⁻). The FACS gating is Cells → Single Cells → Live (Fixable Yellow⁻) → CD45⁺ / CD45⁻; CD45⁻ → CD10⁺CD13⁺ / NOT CD10⁺CD13⁺; NOT CD10⁺CD13⁺ → EpCAM⁺ / EpCAM⁻. CD10/CD13 is gated before EpCAM because proximal tubule cells can express EpCAM: with EpCAM⁺ and CD10⁺CD13⁺ side by side under CD45⁻, double-positive cells would be counted twice. With these gates every live cell is in exactly one population, so the proportions add up to 100%.
 
 For day04 I copied that program into this folder and added a web application built with **Flask**. The web app reuses the program's "business logic" (loading the files, building the tables, statistics and plots) and puts a browser interface on top. I used **Claude Code** (Anthropic's AI coding assistant, running in VS Code) to do the work. This README explains what was done, how, and how I checked that it works.
 
