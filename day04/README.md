@@ -19,6 +19,7 @@ For day04 I copied that program into this folder and added a web application bui
 |---|---|
 | `facs_vs_scrnaseq.py` | The analysis program copied from day03, with one small refactor (see below). It still works from the terminal exactly as before. |
 | `app.py` | The Flask web application. It contains no analysis code of its own and calls functions from `facs_vs_scrnaseq.py`. |
+| `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
 | `test_app.py` | 12 automatic tests covering both the terminal program and the web app. |

@@ -74,4 +74,23 @@ table.data th, table.data td { padding: 4px 10px; border-bottom: 1px solid var(-
 table.data th { color: var(--muted); font-weight: 600; }
 
 img { display: block; max-width: 100%; height: auto; margin: 12px 0; border-radius: 4px; }
+
+/* Explanations on the results page */
+.question { margin: 4px 0 6px; }
+.notes { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
+.notes li { margin: 2px 0; }
+details.help { margin: 8px 0 12px; }
+details.help summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+details.help dl { margin: 8px 0 0; }
+details.help dt { font-weight: 600; margin-top: 8px; }
+details.help dd { margin: 2px 0 0 0; color: var(--muted); }
+figure { margin: 20px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+figcaption { font-size: 14px; }
+figcaption h3 { margin: 0 0 6px; }
+figcaption .label {
+  margin: 8px 0 2px; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+}
+figcaption ul { margin: 0; padding-left: 20px; }
+figcaption p { margin: 0; }
 .files a { color: var(--accent); }

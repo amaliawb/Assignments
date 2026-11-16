@@ -104,6 +104,10 @@ def test_demo_run_end_to_end(client):
     page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
     for name in EXPECTED_FILES:
         assert name in page
+    # every section has its question, and every plot has a "how to read it" explanation
+    assert page.count("<b>Question:</b>") == 4
+    assert page.count("How to read it") == len([f for f in EXPECTED_FILES if f.endswith(".png")])
+    assert all(plot in web.explanations.PLOT_HELP for plot in EXPECTED_FILES if plot.endswith(".png"))
     assert client.get(f"/run/{run_id}/file/A1_proportions_stacked.png").mimetype == "image/png"
 
     archive = zipfile.ZipFile(io.BytesIO(client.get(f"/run/{run_id}/download").data))

@@ -14,20 +14,57 @@
   {% if info.log %}
   <details><summary>Messages from the analysis</summary><pre>{{ info.log }}</pre></details>
   {% endif %}
+  {# General reading guide: p/q-values, box plots, correlations #}
+  <details class="help">
+    <summary>How to read these results (p-values, q-values, box plots)</summary>
+    <dl>
+      {% for term, text in general_help %}<dt>{{ term }}</dt><dd>{{ text }}</dd>{% endfor %}
+    </dl>
+  </details>
 </section>
 
 {% for section in sections %}
 <section class="card">
   <h2>{{ section.title }}</h2>
+  {# The question this section answers, plus notes on how to interpret it #}
+  {% if section.help %}
+  <p class="question"><b>Question:</b> {{ section.help.question }}</p>
+  <ul class="notes">
+    {% for note in section.help.notes %}<li>{{ note }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
   {% if section.table %}
     <div class="table-wrap">{{ section.table | safe }}</div>
+    {% if section.column_help %}
+    <details class="help">
+      <summary>What the table columns mean</summary>
+      <dl>
+        {% for column, text in section.column_help %}<dt><code>{{ column }}</code></dt><dd>{{ text }}</dd>{% endfor %}
+      </dl>
+    </details>
+    {% endif %}
   {% elif section.letter == "B" %}
     <p class="muted">No tests between conditions. This needs at least two conditions, each with at least the minimum number of samples.</p>
   {% endif %}
-  {% for plot in section.plots %}
+
+  {# Each plot with its explanation underneath #}
+  {% for plot, help in section.plots %}
+  <figure>
     <a href="{{ url_for('result_file', run_id=run_id, name=plot) }}" target="_blank">
-      <img src="{{ url_for('result_file', run_id=run_id, name=plot) }}" alt="{{ plot }}"></a>
+      <img src="{{ url_for('result_file', run_id=run_id, name=plot) }}" alt="{{ help.title if help else plot }}"></a>
+    {% if help %}
+    <figcaption>
+      <h3>{{ help.title }}</h3>
+      <p class="label">How to read it</p>
+      <ul>{% for line in help.how %}<li>{{ line }}</li>{% endfor %}</ul>
+      <p class="label">What it tells you</p>
+      <p>{{ help.meaning }}</p>
+    </figcaption>
+    {% endif %}
+  </figure>
   {% endfor %}
+
   {% if section.csvs %}
   <p class="files">Tables:
     {% for csv in section.csvs %}<a href="{{ url_for('result_file', run_id=run_id, name=csv) }}">{{ csv }}</a>{% if not loop.last %} · {% endif %}{% endfor %}

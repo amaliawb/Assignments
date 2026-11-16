@@ -1,0 +1,199 @@
+"""
+explanations.py
+===============
+
+The help texts shown on the results page of the web app (app.py):
+  - GENERAL_HELP : how to read p-values, q-values and box plots (top of the page)
+  - SECTION_HELP : for each section A-D, the question it answers and what to keep in mind
+  - COLUMN_HELP  : what each column of the summary tables means
+  - PLOT_HELP    : for each plot, how to read it and what it tells you
+
+Kept in its own file so the texts are easy to edit without touching the code.
+Plain text only (no HTML); the page template adds the layout.
+"""
+
+# -----------------------------------------------------------------------------
+# General notes, shown once at the top of the results page
+# -----------------------------------------------------------------------------
+GENERAL_HELP = [
+    ("p-value",
+     "How likely a difference (or correlation) at least this large would be by chance if "
+     "there were no real effect. Small p = unlikely to be chance."),
+    ("q-value (FDR)",
+     "The p-value corrected for running many tests at once (Benjamini-Hochberg false "
+     "discovery rate). Use q, not p, to decide what is significant: here q < 0.05."),
+    ("Not significant",
+     "Does NOT prove there is no difference. With few samples the tests have little power: "
+     "with 3 samples per group a Mann-Whitney test can never reach p < 0.05. Look at the "
+     "dots in the plots as well."),
+    ("Box plots",
+     "The box holds the middle 50% of the samples, the black line is the median, the "
+     "whiskers show the spread of the rest. Every dot is one sample - with small groups "
+     "the dots are more informative than the box."),
+    ("Spearman vs Pearson r",
+     "Both go from -1 to +1. Spearman (r of ranks) asks 'do the samples come in the same "
+     "order?'; Pearson asks 'do the values fall on a straight line?'. Spearman is less "
+     "affected by a single extreme sample."),
+]
+
+# -----------------------------------------------------------------------------
+# One block per section: the question it answers + notes on interpretation
+# -----------------------------------------------------------------------------
+SECTION_HELP = {
+    "A": {
+        "question": "Do FACS and scRNA-seq give the same cell-type proportions for the same sample?",
+        "notes": [
+            "Agreement needs two things: a high correlation (samples ranked the same way) AND "
+            "a bias close to 0 with narrow limits of agreement (similar actual numbers).",
+            "A high correlation with a large bias means the methods follow the same trends "
+            "but one systematically finds more of a population - e.g. because some cells "
+            "survive sorting or capture less well in one method.",
+            "Proportions are compared, not absolute numbers: each population is divided by "
+            "the sum of all populations in that sample, separately for each method.",
+        ],
+    },
+    "B": {
+        "question": "Does the proportion of each population change between the conditions - "
+                    "and do both methods see the same change?",
+        "notes": [
+            "2 conditions: Mann-Whitney U test. 3 or more: Kruskal-Wallis test for any "
+            "difference, then Mann-Whitney U for every pair of conditions.",
+            "The strongest result is a change that is significant (or at least in the same "
+            "direction) in BOTH FACS and scRNA-seq.",
+            "If only one method shows a change, it may be a technical effect of that method.",
+        ],
+    },
+    "C": {
+        "question": "Does the protein measured with antibodies on FACS match the RNA of the "
+                    "same gene measured by scRNA-seq?",
+        "notes": [
+            "Marker pairs: CD45 - PTPRC, CD10 - MME, CD13 - ANPEP, EpCAM - EPCAM.",
+            "The table shows the correlation with all populations pooled. This is mostly "
+            "high because the markers differ strongly BETWEEN populations (e.g. CD45 is high "
+            "only on immune cells).",
+            "The correlation INSIDE each population (in C_protein_vs_rna_stats.csv) asks a "
+            "harder question: do samples with more RNA also have more protein? This is often "
+            "weak, because RNA and protein levels are regulated separately.",
+            "A population with fewer than 10 sequenced cells in a sample gets no RNA value "
+            "for that sample (not enough cells for a reliable mean).",
+        ],
+    },
+    "D": {
+        "question": "Do the populations look different in the S8 images (size, shape, ...), "
+                    "and do these image features change between conditions?",
+        "notes": [
+            "The table compares the populations with each other (Kruskal-Wallis + every pair). "
+            "The tests between conditions are in D_imaging_tests_between_conditions.csv.",
+            "Big differences between populations are expected (e.g. epithelial cells are "
+            "larger than immune cells) - they mainly confirm that the gates pick the right cells.",
+            "The feature names are set in SETTINGS (IMAGING_FEATURES) in facs_vs_scrnaseq.py.",
+        ],
+    },
+}
+
+# -----------------------------------------------------------------------------
+# What each table column means (only the columns shown in a table are listed)
+# -----------------------------------------------------------------------------
+COLUMN_HELP = {
+    "population": "Cell population (from the FACS gates / scRNA-seq labels).",
+    "method": "FACS (BD S8) or scRNA-seq (10x Flex).",
+    "marker": "Antibody marker measured on FACS (paired with its gene).",
+    "feature": "S8 imaging feature.",
+    "n": "Number of samples used.",
+    "spearman_r": "Rank correlation, -1 to +1. Near +1 = samples come in the same order in both measurements.",
+    "spearman_q_fdr": "FDR-corrected p-value of the Spearman correlation. Below 0.05 = unlikely to be chance.",
+    "pearson_r": "Linear correlation, -1 to +1. Near +1 = the values lie on a straight rising line.",
+    "pearson_q_fdr": "FDR-corrected p-value of the Pearson correlation.",
+    "bland_altman_bias": "Average difference scRNA-seq minus FACS. Positive = scRNA-seq finds MORE of this "
+                         "population; negative = fewer. 0.05 = 5 percentage points.",
+    "bland_altman_lower": "Lower limit of agreement: 95% of samples have a difference above this.",
+    "bland_altman_upper": "Upper limit of agreement: 95% of samples have a difference below this. "
+                          "A narrow range = the methods agree sample by sample.",
+    "wilcoxon_q_fdr": "Paired test (FDR-corrected): is one method systematically higher than the other "
+                      "in the same samples? Below 0.05 = yes.",
+    "test": "Mann-Whitney U (two groups) or Kruskal-Wallis (three or more groups at once).",
+    "comparison": "Which groups were compared.",
+    "p_value": "Uncorrected p-value.",
+    "q_value_fdr": "p-value corrected for all tests in this table. Use this one.",
+    "significant": "True if q_value_fdr is below 0.05.",
+}
+
+# -----------------------------------------------------------------------------
+# One entry per plot file: how to read it, and what it means
+# -----------------------------------------------------------------------------
+PLOT_HELP = {
+    "A1_proportions_stacked.png": {
+        "title": "Stacked bars: proportions per sample",
+        "how": [
+            "Each sample has two bars next to each other: FACS (left) and scRNA-seq ('seq', right).",
+            "Each colored block is one population; its height is that population's proportion. "
+            "Every bar adds up to 1 (100%).",
+            "Samples are sorted by condition, so you can also see shifts between conditions.",
+        ],
+        "meaning": "If the two bars of a sample look alike, the methods agree for that sample. "
+                   "If one color is always bigger in the seq bar, that method systematically finds "
+                   "more of that population.",
+    },
+    "A2_proportions_FACS_vs_seq.png": {
+        "title": "Scatter: FACS proportion vs scRNA-seq proportion",
+        "how": [
+            "One panel per population; each dot is one sample.",
+            "x = proportion measured by FACS, y = proportion measured by scRNA-seq.",
+            "The dashed diagonal is perfect agreement (same value in both methods).",
+            "The title gives the Spearman r and its q-value.",
+        ],
+        "meaning": "Dots ON the diagonal = the methods agree. Dots ABOVE it = scRNA-seq finds more "
+                   "of this population, BELOW = fewer. Dots on a tight line that is shifted off the "
+                   "diagonal = the methods rank samples the same way but with a constant offset.",
+    },
+    "A3_bland_altman.png": {
+        "title": "Bland-Altman: how big are the differences between the methods?",
+        "how": [
+            "One panel per population; each dot is one sample.",
+            "x = the average of the two methods, y = scRNA-seq minus FACS.",
+            "Grey line = 0 (no difference). Black line = the bias (average difference). "
+            "Dashed lines = limits of agreement: 95% of samples should fall between them.",
+        ],
+        "meaning": "Black line far from 0 = one method is systematically higher. Dashed lines far "
+                   "apart = the methods can disagree a lot for a single sample. Dots that slope or "
+                   "spread out from left to right = the difference depends on how common the "
+                   "population is.",
+    },
+    "B1_proportions_by_condition.png": {
+        "title": "Proportions per condition, FACS and scRNA-seq",
+        "how": [
+            "One panel per population; the conditions are on the x-axis.",
+            "For each condition: dark grey box = FACS, light grey box = scRNA-seq. Each dot is one sample.",
+            "Compare the boxes of the same color between conditions.",
+        ],
+        "meaning": "If the median (black line) moves in the same direction in both methods, the change "
+                   "between conditions is robust. Check the table above to see whether it is "
+                   "significant. Only drawn when at least two conditions are chosen.",
+    },
+    "C1_protein_vs_rna.png": {
+        "title": "Protein (FACS) vs RNA (scRNA-seq) per marker",
+        "how": [
+            "One panel per marker; each dot is one sample x one population, colored by population.",
+            "x = mean RNA of the gene in that population (log-normalized), y = FACS median "
+            "intensity of the antibody in that population's gate.",
+            "The title gives the Spearman r with all populations pooled.",
+        ],
+        "meaning": "The population that should carry the marker (e.g. immune cells for CD45, "
+                   "proximal tubule for CD10/CD13, epithelial for EpCAM) should sit top-right: high "
+                   "in both methods. Separate color clouds = the marker separates the populations in "
+                   "both methods. A rising trend inside one color = protein follows RNA between samples.",
+    },
+    "D1_imaging_features.png": {
+        "title": "S8 imaging features per population and condition",
+        "how": [
+            "Rows = imaging features, columns = populations, x-axis = conditions.",
+            "Each box shows the values of one condition; each dot is one sample "
+            "(the median of that feature inside the population's gate).",
+            "Every panel has its own y-axis scale - read the numbers before comparing heights "
+            "between panels.",
+        ],
+        "meaning": "Within one panel: does the feature change between conditions in that population? "
+                   "Along one row: how different are the populations for that feature (compare the "
+                   "y-axis numbers)?",
+    },
+}

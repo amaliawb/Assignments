@@ -43,6 +43,7 @@ import pandas as pd
 from flask import (Flask, abort, flash, redirect, render_template, request,
                    send_file, send_from_directory, url_for)
 
+import explanations   # help texts for the results page (how to read each table and plot)
 import facs_vs_scrnaseq as analysis
 
 
@@ -236,28 +237,41 @@ def results(run_id):
 
     by_condition = read_result(results_dir, "B_condition_tests_proportions.csv")
     rna_stats = read_result(results_dir, "C_protein_vs_rna_stats.csv")
+    # For each section: the summary table and which of its columns to show
     tables = {
-        "A": table_html(read_result(results_dir, "A_method_agreement_stats.csv"),
-                        ["population", "n", "spearman_r", "spearman_q_fdr", "pearson_r",
-                         "bland_altman_bias", "bland_altman_lower", "bland_altman_upper",
-                         "wilcoxon_q_fdr"]),
-        "B": table_html(by_condition,
-                        ["population", "method", "test", "comparison", "p_value",
-                         "q_value_fdr", "significant"]),
-        "C": table_html(rna_stats[rna_stats["population"] == "All populations"] if rna_stats is not None else None,
-                        ["marker", "n", "spearman_r", "spearman_q_fdr", "pearson_r", "pearson_q_fdr"]),
-        "D": table_html(read_result(results_dir, "D_imaging_tests_between_populations.csv"),
-                        ["feature", "test", "comparison", "p_value", "q_value_fdr", "significant"]),
+        "A": (read_result(results_dir, "A_method_agreement_stats.csv"),
+              ["population", "n", "spearman_r", "spearman_q_fdr", "pearson_r",
+               "bland_altman_bias", "bland_altman_lower", "bland_altman_upper",
+               "wilcoxon_q_fdr"]),
+        "B": (by_condition,
+              ["population", "method", "test", "comparison", "p_value",
+               "q_value_fdr", "significant"]),
+        "C": (rna_stats[rna_stats["population"] == "All populations"] if rna_stats is not None else None,
+              ["marker", "n", "spearman_r", "spearman_q_fdr", "pearson_r", "pearson_q_fdr"]),
+        "D": (read_result(results_dir, "D_imaging_tests_between_populations.csv"),
+              ["feature", "test", "comparison", "p_value", "q_value_fdr", "significant"]),
     }
     n_significant = int(by_condition["significant"].sum()) if by_condition is not None else 0
 
     files = sorted(p.name for p in results_dir.iterdir())
-    sections = [{"letter": letter, "title": title, "table": tables[letter],
-                 "plots": [f for f in files if f.startswith(letter) and f.endswith(".png")],
-                 "csvs": [f for f in files if f.startswith(letter) and f.endswith(".csv")]}
-                for letter, title in SECTIONS.items()]
+    sections = []
+    for letter, title in SECTIONS.items():
+        table, columns = tables[letter]
+        shown = [] if table is None or table.empty else [c for c in columns if c in table.columns]
+        sections.append({
+            "letter": letter, "title": title,
+            "table": table_html(table, columns),
+            # explanations: the question of the section, notes, and the meaning of each column shown
+            "help": explanations.SECTION_HELP.get(letter),
+            "column_help": [(c, explanations.COLUMN_HELP[c]) for c in shown if c in explanations.COLUMN_HELP],
+            # each plot comes with its own "how to read it" text (None if there is none)
+            "plots": [(f, explanations.PLOT_HELP.get(f))
+                      for f in files if f.startswith(letter) and f.endswith(".png")],
+            "csvs": [f for f in files if f.startswith(letter) and f.endswith(".csv")],
+        })
     return render_template("results.html", run_id=run_id, info=info, sections=sections,
-                           n_significant=n_significant, alpha=analysis.ALPHA)
+                           n_significant=n_significant, alpha=analysis.ALPHA,
+                           general_help=explanations.GENERAL_HELP)
 
 
 @app.get("/run/<run_id>/file/<path:name>")
