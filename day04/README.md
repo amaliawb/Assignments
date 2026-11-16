@@ -13,12 +13,53 @@ For day04 I copied that program into this folder and added a web application bui
 
 ---
 
+## Open the website (quick start)
+
+1. Open a terminal: the Terminal app, or in VS Code **View → Terminal**.
+2. Go to the day04 folder (inside the Assignments folder) and start the server:
+   ```bash
+   cd day04
+   python -m flask --app app run --port 5050
+   ```
+   Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
+3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
+4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
+5. Upload your three files, or click **Use demo data** to try it with made-up data.
+6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
+
+Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
+
+**Why port 5050 and not `python app.py`?** `python app.py` starts the website on port 5000. On a Mac, port 5000 is often taken by the **AirPlay Receiver**, and the browser then shows an empty "403 Forbidden" page. Port 5050 avoids this. If you switch off AirPlay Receiver (System Settings → General → AirDrop & Handoff), `python app.py` and http://127.0.0.1:5000 work too.
+
+### What does it mean that the website runs "on a server"?
+
+A website always has two parts:
+
+- **The server** is a program that waits for requests and answers them. Here the server is `app.py`, built with **Flask** (a Python library for making websites). When you start it, it keeps running in the terminal and listens for requests.
+- **The client** is your web browser. When you open a page or click a button, the browser sends a *request* to the server ("give me the start page", "here are my 3 files", "run the analysis with Healthy and Disease"). The server runs the Python code for that request and sends back a *response*: an HTML page, a plot image, or a zip file. The browser then shows it.
+
+What happens in this app:
+
+1. You open the start page → the browser asks the server for `/` → Flask runs the `index()` function in `app.py` and sends back the upload page (made from `templates/index.html` and styled by `static/style.css`).
+2. You upload the files → the browser sends them to `/upload` → the server saves them in a new folder `runs/<id>/data/`.
+3. You choose the conditions and click **Run analysis** → the server calls `run_analysis()` from `facs_vs_scrnaseq.py`, the same code the terminal version uses. The tables and plots are saved in `runs/<id>/results/`.
+4. The browser asks for the results page → the server builds it from the saved tables and plots, together with the explanations from `explanations.py`.
+
+What the address **http://127.0.0.1:5050** means:
+
+- **`127.0.0.1`** (also called *localhost*) is a special address that always means "this same computer". The server and the browser both run on my Mac, so nothing is sent over the internet.
+- **`5050`** is the *port*: a number that tells the computer which program a request is for, because many programs can be listening on the same computer at once.
+- Because the server only listens on `127.0.0.1`, **only this computer can open the website**. Other people on the network or the internet cannot reach it, and the data never leaves the computer. To put it online for others you would need to run it on a public server with a login, which this project does not do.
+
+---
+
 ## What's in this folder
 
 | File | What it is |
 |---|---|
 | `facs_vs_scrnaseq.py` | The analysis program copied from day03, with one small refactor (see below). It still works from the terminal exactly as before. |
 | `app.py` | The Flask web application. It contains no analysis code of its own and calls functions from `facs_vs_scrnaseq.py`. |
+| `HOW_THE_CODE_WORKS.md` | A plain-language explanation of the logic of the code, for readers who don't know much Python. |
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
@@ -114,12 +155,12 @@ I asked Claude to check both the old (day03) and the new (day04) versions. It di
 
 Requirements: Python with `pandas`, `numpy`, `scipy`, `matplotlib`, `openpyxl` and `flask`. Anaconda has all of them. On my Mac I use `/opt/anaconda3/bin/python`, because the system `python3` doesn't have pandas.
 
-**Web interface:**
+**Web interface:** see [Open the website (quick start)](#open-the-website-quick-start) at the top. In short:
 ```bash
 cd day04
-python app.py
+python -m flask --app app run --port 5050
 ```
-Then open **http://127.0.0.1:5000** in a browser. Stop the server with `Ctrl+C`.
+Then open **http://127.0.0.1:5050** in a browser. Stop the server with `Ctrl+C`. (`python app.py` uses port 5000, which only works if AirPlay Receiver is switched off.)
 
 **Terminal, as in day03:**
 ```bash

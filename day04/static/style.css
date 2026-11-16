@@ -1,28 +1,39 @@
+/* =============================================================================
+   Look of the web app: very light pink background, white cards, rose accents.
+   Fonts: Fraunces (headings) and Nunito (text), loaded in base.html.
+   ============================================================================= */
+
 :root {
-  --bg: #f6f5f1;
-  --surface: #ffffff;
-  --text: #0b0b0b;
-  --muted: #6b6a66;
-  --border: #e2e0da;
-  --accent: #2a78d6;
+  --bg: #fdf3f6;            /* very light pink page background */
+  --surface: #ffffff;       /* cards */
+  --surface-tint: #fdf7f9;  /* table headers, help boxes */
+  --text: #2e2228;
+  --muted: #7d6a72;
+  --border: #f1dde4;
+  --accent: #c2477a;        /* rose: buttons, links, headings accents */
+  --accent-soft: #fbe4ec;
   --accent-text: #ffffff;
   --alert-bg: #fdecea;
   --alert-text: #8a1c12;
+  --shadow: 0 2px 10px rgba(194, 71, 122, 0.08);
+  --heading-font: "Fraunces", Georgia, "Times New Roman", serif;
+  --body-font: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #161615;
-    --surface: #202020;
-    --text: #ecebe7;
-    --muted: #a3a29d;
-    --border: #3a3a38;
-    --accent: #5b9be6;
-    --accent-text: #0b0b0b;
+    --bg: #1f1619;
+    --surface: #2a1f24;
+    --surface-tint: #33262c;
+    --text: #f3e8ec;
+    --muted: #c0a9b2;
+    --border: #46343c;
+    --accent: #ec8fb4;
+    --accent-soft: #4a2a37;
+    --accent-text: #1f1619;
     --alert-bg: #3b1e1a;
     --alert-text: #f4b5ac;
+    --shadow: none;
   }
-  /* the plots are drawn on white, so give them a white frame in dark mode */
-  img { background: #ffffff; }
 }
 
 * { box-sizing: border-box; }
@@ -30,67 +41,102 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.6 var(--body-font);
 }
+
+/* ---- Header ---------------------------------------------------------------- */
 header {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
-  padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px;
+  padding: 18px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--border); box-shadow: var(--shadow);
 }
-.brand { font-weight: 700; color: var(--text); text-decoration: none; }
+.brand {
+  font-family: var(--heading-font); font-size: 1.4rem; font-weight: 600;
+  color: var(--accent); text-decoration: none;
+}
 .tagline, .muted { color: var(--muted); }
-main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
 
+/* ---- Cards and headings ---------------------------------------------------- */
 .card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 16px 20px; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  padding: 22px 26px; margin-bottom: 20px; box-shadow: var(--shadow);
 }
-h1 { font-size: 1.35rem; margin: 0 0 8px; }
-h2 { font-size: 1.15rem; margin: 0 0 8px; }
-h3 { font-size: 1rem; margin: 16px 0 6px; }
+h1, h2, h3 { font-family: var(--heading-font); font-weight: 600; line-height: 1.25; }
+h1 { font-size: 1.75rem; margin: 0 0 10px; }
+h2 { font-size: 1.4rem; margin: 0 0 10px; color: var(--accent); }
+h3 { font-size: 1.1rem; margin: 18px 0 6px; }
 
-label { display: block; margin: 10px 0; }
-label input[type="file"] { display: block; margin-top: 4px; max-width: 100%; }
-label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 4px 16px 4px 0; }
+/* ---- Forms ------------------------------------------------------------------ */
+label { display: block; margin: 12px 0; font-weight: 600; }
+label input[type="file"] { display: block; margin-top: 6px; max-width: 100%; font: inherit; font-weight: 400; }
+input[type="file"]::file-selector-button {
+  margin-right: 10px; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); font: inherit; font-weight: 600; cursor: pointer;
+}
+input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
+label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 4px 18px 4px 0; font-weight: 400; }
 fieldset { border: 0; padding: 0; margin: 0; }
 
 button, .button {
-  display: inline-block; margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px;
-  background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600;
-  text-decoration: none; cursor: pointer;
+  display: inline-block; margin-top: 14px; padding: 9px 20px; border: 1px solid var(--accent);
+  border-radius: 999px; background: var(--accent); color: var(--accent-text);
+  font: inherit; font-weight: 700; text-decoration: none; cursor: pointer;
+  transition: filter 0.15s, background 0.15s;
 }
-.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button:hover, .button:hover { filter: brightness(1.08); }
+.secondary { background: transparent; color: var(--accent); }
+.secondary:hover { background: var(--accent-soft); filter: none; }
 .actions .button { margin-right: 8px; }
 
 .alert {
-  background: var(--alert-bg); color: var(--alert-text); padding: 10px 14px; border-radius: 6px;
+  background: var(--alert-bg); color: var(--alert-text); padding: 12px 16px; border-radius: 10px;
   white-space: pre-wrap; font: 13px/1.45 ui-monospace, Menlo, monospace;
 }
 details pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); }
-code { font-size: 0.9em; }
+code {
+  font-size: 0.85em; padding: 1px 6px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--text);
+}
+a { color: var(--accent); }
 
+/* ---- Tables ----------------------------------------------------------------- */
 .table-wrap { overflow-x: auto; }
-table.data { border-collapse: collapse; margin: 8px 0 12px; font-size: 13px; }
-table.data th, table.data td { padding: 4px 10px; border-bottom: 1px solid var(--border); text-align: left; }
-table.data th { color: var(--muted); font-weight: 600; }
+table.data {
+  border-collapse: separate; border-spacing: 0; margin: 10px 0 14px; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+}
+table.data th, table.data td { padding: 6px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+table.data tr:last-child td { border-bottom: 0; }
+table.data th { background: var(--surface-tint); color: var(--muted); font-weight: 700; }
+table.data tbody tr:hover td { background: var(--surface-tint); }
 
-img { display: block; max-width: 100%; height: auto; margin: 12px 0; border-radius: 4px; }
+/* ---- Plots ------------------------------------------------------------------ */
+/* the plots are drawn on white, so they always get a white frame */
+img {
+  display: block; max-width: 100%; height: auto; margin: 14px 0;
+  background: #ffffff; border: 1px solid var(--border); border-radius: 12px; padding: 8px;
+}
 
-/* Explanations on the results page */
+/* ---- Explanations on the results page -------------------------------------- */
 .question { margin: 4px 0 6px; }
-.notes { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
-.notes li { margin: 2px 0; }
-details.help { margin: 8px 0 12px; }
-details.help summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.notes { margin: 0 0 14px; padding-left: 20px; color: var(--muted); }
+.notes li { margin: 3px 0; }
+details.help {
+  margin: 10px 0 14px; padding: 10px 14px; border-radius: 10px;
+  background: var(--surface-tint); border: 1px solid var(--border);
+}
+details.help summary { cursor: pointer; color: var(--accent); font-weight: 700; }
 details.help dl { margin: 8px 0 0; }
-details.help dt { font-weight: 600; margin-top: 8px; }
+details.help dt { font-weight: 700; margin-top: 10px; }
 details.help dd { margin: 2px 0 0 0; color: var(--muted); }
-figure { margin: 20px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
-figcaption { font-size: 14px; }
+figure { margin: 24px 0 0; padding-top: 16px; border-top: 1px dashed var(--border); }
+figcaption { font-size: 15px; }
 figcaption h3 { margin: 0 0 6px; }
 figcaption .label {
-  margin: 8px 0 2px; font-size: 12px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+  margin: 10px 0 2px; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent);
 }
 figcaption ul { margin: 0; padding-left: 20px; }
 figcaption p { margin: 0; }
-.files a { color: var(--accent); }
+.files { margin-top: 18px; }
