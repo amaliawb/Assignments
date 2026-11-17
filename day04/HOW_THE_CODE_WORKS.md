@@ -43,6 +43,7 @@ There are two ways to use it, and both run **the same analysis code**:
 | `templates/*.html` | The layout of each web page | Empty forms that get filled in |
 | `static/style.css` | Colors, fonts, spacing of the website | The page design |
 | `test_app.py` | Automatic checks that everything still works | Positive and negative controls |
+| `test_business_logic.py` | Checks each calculation on tiny tables with a known answer | Standards of known concentration |
 
 `app.py` contains **no analysis of its own**. It always calls `facs_vs_scrnaseq.py`, so the terminal and the website can never give different results.
 
@@ -363,3 +364,5 @@ The tests are small programs that use the code and check the answers, like contr
 - made-up or unsafe addresses give "404 not found".
 
 After any change, run the tests. If all of them pass, the change didn't break anything they cover.
+
+A second test file, `test_business_logic.py`, checks the **calculations** one function at a time. Each test gives a function a tiny table whose correct answer was worked out by hand, like running a standard of known concentration. For example, counts of 10/20/30/40 must give proportions of 0.1/0.2/0.3/0.4. Run it with `python -m pytest test_business_logic.py -v`. `TESTS_README.md` explains every test.

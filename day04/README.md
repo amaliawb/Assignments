@@ -64,6 +64,8 @@ What the address **http://127.0.0.1:5050** means:
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
 | `test_app.py` | 17 automatic tests covering both the terminal program and the web app. |
+| `test_business_logic.py` | 46 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
+| `TESTS_README.md` | How the unit tests in `test_business_logic.py` were written and what each one checks. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
 ---
@@ -238,7 +240,8 @@ python facs_vs_scrnaseq.py --condition-column condition --conditions Healthy Dis
 **Tests:**
 ```bash
 cd day04
-python -m pytest test_app.py -v
+python -m pytest test_app.py -v              # the whole program and the website
+python -m pytest test_business_logic.py -v   # unit tests of the calculations (see TESTS_README.md)
 ```
 
 **Changing the settings:** gate paths, fluorochrome channel names, the cell-type labels for each population, imaging features and statistical thresholds are still edited in the SETTINGS section at the top of `facs_vs_scrnaseq.py`. Restart `app.py` after changing them. The start page shows the values it's using.
