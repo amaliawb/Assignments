@@ -1,0 +1,10 @@
+# Packages the FACS app needs.
+# Install them all with:   python -m pip install -r requirements.txt
+# (start_app.bat offers to do this for you if any are missing)
+
+flask>=3.0        # the web app
+pandas>=2.0       # tables: reading CSV/Excel, grouping, merging
+numpy>=1.24       # maths on lists of numbers
+scipy>=1.10       # statistical tests (Mann-Whitney, Spearman, ...)
+matplotlib>=3.7   # plots
+openpyxl>=3.1     # lets pandas read and write Excel (.xlsx) files
