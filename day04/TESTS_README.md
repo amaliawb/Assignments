@@ -10,7 +10,7 @@ python -m pytest test_business_logic.py -v      # only the business-logic tests 
 python -m pytest -v                             # all tests: these + test_app.py (~1.5 minutes)
 ```
 
-All **86 tests pass**, along with the 23 tests in `test_app.py` (109 in total).
+All **97 tests pass**, along with the 31 tests in `test_app.py` (128 in total).
 
 ---
 
@@ -215,6 +215,22 @@ These tests write a tiny made-up `.h5ad` (5 cells, the four marker genes plus tw
 | `test_add_default_flex_keeps_your_own_scrnaseq_rows_and_files` | A sheet that already lists scRNA-seq samples is used as written, and an uploaded scRNA-seq file is never replaced. |
 | `test_condition_candidates_leave_out_ids_barcodes_and_empty_columns` | Only real group columns (`condition`, `timepoint`) are offered as the condition column: not `flex_probe_barcode`, a file or ID column, or a column without values. |
 | `test_every_flex_cluster_label_is_in_exactly_one_population` | (Runs for each panel.) Each of the 13 real Flex cluster labels is in exactly one population; neutrophil cluster 6 is a neutrophil, macrophage cluster 9 is other immune. |
+
+### 6. Labels, your own `.h5ad`, populations scRNA-seq can't see, and what the statistics can show
+
+| Test | What it checks |
+|---|---|
+| `test_label_sort_key_puts_cluster_numbers_in_numeric_order` | "1: ...", "2: ...", "10: ..." come in number order (not 1, 10, 2), then labels without a number alphabetically. |
+| `test_seq_label_summary_counts_cells_genes_and_populations` | The label table of the setup page: cluster 6 has 3 cells in 3 samples and PTPRC mean (1.5 + 0 + 3) / 3 = 1.5; it is Neutrophils in both panels. An unknown label is "Other" and flagged as not in SETTINGS. |
+| `test_load_seq_label_map_replaces_settings_for_those_labels` | A label map moves Macrophage to Neutrophils and gives a new label a population; other labels keep their SETTINGS population. A population that isn't in the panel stops with a message. |
+| `test_smallest_possible_p_for_each_test` | 4 values vs one pool: 2/2⁴ = 0.125; 3 vs 3: 2/C(6,3) = 0.1; 6 vs 6: 2/924; 2 vs 2: no test. The real scipy tests on the most extreme data give exactly these values, so the formula is right. |
+| `test_keep_populations_divides_by_the_kept_populations_only` | Keeping 2 of 3 populations with 50, 30 and 20 cells gives 50/80 and 30/80, and every sample adds up to 1 again. |
+| `test_only_populations_is_undone_after_the_block` | Inside the block only the chosen populations exist, colours stay the same per population, and afterwards all populations are back. |
+| `test_populations_without_seq_cells` | The populations with no scRNA-seq cells ("Other" doesn't count) are listed, in panel order. |
+| `test_interpretation_notes` | A missing population, a single FACS pool and a comparison that can never be significant (smallest p 0.125) each give one note; 6 vs 6 people gives none. |
+| `test_h5ad_overview_guesses_the_columns_and_finds_the_genes` | The column page's guesses (sample_id, leiden_atlas, patient_id, role, log1p_cp10k), the layers, and the examples per column. With Ensembl IDs as gene index, the genes are found in the `gene_symbols` column and the main matrix X is guessed. |
+| `test_h5ad_tables_with_a_gene_column_and_without_a_person` | Genes are read through the symbol column, a file without a person column gives no `donor_id`, and a cluster column used as a group is refused because it varies inside a sample. |
+| `test_add_h5ad_adds_the_samples_to_a_facs_only_sheet` | Your own `.h5ad` adds its 3 samples to a FACS-only sheet, with the person, condition and timepoint columns. |
 
 ---
 

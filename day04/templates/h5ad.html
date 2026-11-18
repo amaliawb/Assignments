@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Choose the .h5ad columns · FACS vs scRNA-seq{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>1b. Which columns of {{ file_name }}?</h1>
+  {% if error %}<pre class="alert">{{ error }}</pre>{% endif %}
+  {% if overview %}
+  <p>The file has {{ "{:,}".format(overview.n_cells) }} cells. The app needs to know which of its cell columns
+     (<code>.obs</code>) hold the sample, the cell type, the person and the groups. Columns with a matching name are
+     pre-selected; the examples show a few values of each column. Only these columns and the four marker genes are
+     read, so this works for big files too. Afterwards the uploaded .h5ad is deleted again: only a small table
+     (sample, cell type, marker genes) is kept for this run.
+     Columns with more than 1,000 different values (numbers per cell, such as QC scores) are not listed.</p>
+  {% if overview.missing_genes %}
+  <p class="alert">These marker genes were not found in the gene names of the file: {{ overview.missing_genes | join(", ") }}.
+     The file must contain them (as gene symbols, in the gene index or in a column of <code>.var</code>).</p>
+  {% elif overview.gene_column %}
+  <p class="muted">The marker genes were found in the <code>.var</code> column <code>{{ overview.gene_column }}</code>.</p>
+  {% endif %}
+
+  {% macro column_menu(name, title, help, optional=False) %}
+  <label>{{ title }} <span class="muted">{{ help }}</span>
+    <select name="{{ name }}">
+      {% if optional %}<option value="">(none)</option>{% endif %}
+      {% for column in overview.columns if column.n_values <= 1000 or column.name == chosen[name] %}
+      <option value="{{ column.name }}" {% if column.name == chosen[name] %}selected{% endif %}>
+        {{ column.name }} · {{ column.n_values }} value{{ "" if column.n_values == 1 else "s" }}: {{ column.examples | join(", ") }}{% if column.n_values > 4 %}, ...{% endif %}
+      </option>
+      {% endfor %}
+    </select></label>
+  {% endmacro %}
+
+  <form method="post">
+    {{ column_menu("sample", "Sample", "(one value per sample, e.g. sample_id)") }}
+    {{ column_menu("label", "Cell type", "(the cluster / annotation label of each cell, e.g. leiden_atlas or cell_type)") }}
+    {{ column_menu("donor", "Person", "(optional: samples of the same person are combined, e.g. patient_id)", True) }}
+    {{ column_menu("condition", "Groups to compare", "(optional: written to the sample sheet as the column 'condition', next to your FACS groups)", True) }}
+
+    <p><b>More sample columns to bring along</b> <span class="muted">(optional, e.g. timepoint: each becomes a column of
+       the same name in the sample sheet, so you can choose it as the condition column later). A column must have one
+       value per sample.</span></p>
+    {% for column in overview.columns if column.n_values <= 50 %}
+    <label class="inline"><input type="checkbox" name="extra" value="{{ column.name }}"> {{ column.name }}
+      <span class="muted">({{ column.examples | join(", ") }}{% if column.n_values > 4 %}, ...{% endif %})</span></label>
+    {% endfor %}
+
+    <label>Expression values <span class="muted">(use log-normalised values, not raw counts or scaled values)</span>
+      <select name="layer">
+        {% for layer in overview.layers %}
+        <option value="{{ layer }}" {% if layer == chosen.layer %}selected{% endif %}>{{ "X (the main matrix)" if layer == "X" else "layer " ~ layer }}</option>
+        {% endfor %}
+      </select></label>
+
+    <p class="muted">If your sample sheet already lists scRNA-seq samples, those rows are used as they are (their
+       <code>sample_id</code> must match the sample column above); otherwise the samples of the file are added to it.</p>
+    <button type="submit">Read the file and continue</button>
+  </form>
+  {% endif %}
+  <p><a href="{{ url_for('index') }}">Back to the start page</a></p>
+</section>
+{% endblock %}

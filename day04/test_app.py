@@ -22,7 +22,7 @@ import facs_vs_scrnaseq as analysis
 HERE = Path(__file__).resolve().parent
 EXPECTED_FILES = [
     "A1_proportions_stacked.png", "A2_proportions_by_method.png", "A3_method_difference.png",
-    "A4_composition_overview.png", "A_composition_overview.csv",
+    "A4_composition_overview.png", "A_composition_overview.csv", "A_label_assignment.csv", "notes.txt",
     "A_method_comparison_stats.csv", "A_proportions.csv", "A_proportions_per_sample.csv",
     "B1_proportions_by_condition.png", "B_condition_tests_proportions.csv",
     "C1_protein_vs_rna.png", "C_protein_per_sample.csv", "C_rna_per_sample.csv",
@@ -395,6 +395,178 @@ def test_old_sample_sheet_without_method_column_still_runs(demo_data, tmp_path):
 
     result = analysis.run_analysis(demo_data, tmp_path / "results", "condition", FACS_CONDITIONS, FACS_CONDITIONS)
     assert (result["n_facs_samples"], result["n_seq_samples"]) == (7, 7)
+
+
+def run_id_of(response):
+    """The run id from the redirect after an upload."""
+    return response.headers["Location"].rstrip("/").split("/")[-1]
+
+
+# ---- populations scRNA-seq cannot see, and what the results can show -------------
+
+def test_population_without_scrnaseq_cells_is_left_out_of_the_method_comparison(demo_data, tmp_path):
+    # Without the proximal tubule label, scRNA-seq has no proximal tubule cells at all
+    out = tmp_path / "results"
+    result = analysis.run_analysis(demo_data, out, "condition", SEQ_CONDITIONS, FACS_CONDITIONS,
+                                   label_map={"Proximal tubule cell": "Other"})
+    assert result["seq_missing_populations"] == ["Proximal tubule"]
+    comparison = result["comparison"]
+    left_out = comparison[comparison["population"] == "Proximal tubule"]
+    assert len(left_out) == len(SEQ_CONDITIONS) * len(FACS_CONDITIONS)
+    assert left_out["test"].str.startswith("not compared").all() and left_out["p_value"].isna().all()
+    # Both methods' proportions are recalculated out of the populations both measure: they add up to 1
+    compared = pd.read_csv(out / "A_proportions_compared_populations.csv")
+    assert "Proximal tubule" not in set(compared["population"])
+    sums = compared.groupby([analysis.SAMPLE_COLUMN, "method"])["proportion"].sum()
+    assert sums.round(9).eq(1).all()
+    # ... the atlas too (section E), while section B still has the FACS proximal tubule
+    assert "Proximal tubule" not in set(result["atlas_tests"]["population"])
+    assert "Proximal tubule" in set(result["by_condition"]["population"])
+    assert "Proximal tubule" in " ".join(result["notes"])
+    assert "Proximal tubule" in (out / "notes.txt").read_text()
+    # The label table says which label was moved
+    labels = result["labels"].set_index("label")
+    assert labels.loc["Proximal tubule cell", "population"] == "Other" and labels.loc["Proximal tubule cell", "changed"]
+
+
+def test_notes_say_when_a_comparison_can_never_be_significant(demo_data, tmp_path):
+    result = analysis.run_analysis(demo_data, tmp_path / "results", "condition", SEQ_CONDITIONS, FACS_CONDITIONS)
+    notes = " ".join(result["notes"])
+    # 4 people against one pool: the smallest possible p is 2 / 2^4 = 0.125
+    assert "'Healthy pool' is a single sample" in notes
+    assert "smallest possible p-value is 0.125" in notes
+    pool = result["comparison"][result["comparison"]["facs_group"] == "Healthy pool"]
+    assert pool["smallest_possible_p"].eq(0.125).all()
+
+
+def test_results_page_shows_the_notes_and_the_label_table(client):
+    run_id = run_id_of(client.post("/upload", data={"demo": "1"}))
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    assert "Read this first" in page and "single sample" in page
+    assert "Which population each scRNA-seq label was counted in" in page
+    assert "smallest_possible_p" in page
+
+
+# ---- checking and changing the label -> population assignment on the setup page ----
+
+def test_setup_page_lists_every_scrnaseq_label_with_its_population(client, demo_data, tmp_path):
+    cells = pd.read_csv(demo_data / analysis.SEQ_FILE, dtype={analysis.SAMPLE_COLUMN: str})
+    cells.loc[cells.index[:30], analysis.CELL_TYPE_COLUMN] = "13: mystery cluster"     # a label not in SETTINGS
+    cells.to_csv(tmp_path / "cells.csv", index=False)
+    files = {"metadata": (open(demo_data / "metadata.csv", "rb"), "metadata.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx"),
+             "seq": (open(tmp_path / "cells.csv", "rb"), "cells.csv")}
+    run_id = run_id_of(client.post("/upload", data=files, content_type="multipart/form-data"))
+    page = client.get(f"/run/{run_id}").get_data(as_text=True)
+    assert "Which FACS population is each scRNA-seq cell type?" in page
+    for label in cells[analysis.CELL_TYPE_COLUMN].unique():
+        assert label in page
+    assert 'title="This label is not in the seq_labels of the settings">new' in page
+    assert "<i>PTPRC</i>" in page and "<i>EPCAM</i>" in page
+    # the default choice of the current panel comes from SETTINGS
+    summary = analysis.seq_label_summary(tmp_path / "cells.csv")
+    row = int(summary.index[summary["label"] == "Neutrophil"][0])
+    compact = " ".join(page.split())
+    assert f'name="label_{row}" data-panel="{analysis.FACS_PANEL}" data-default="Neutrophils"' in compact
+
+
+def test_changed_label_assignment_is_used_and_remembered(client):
+    run_id = run_id_of(client.post("/upload", data={"demo": "1"}))
+    folder = web.RUNS_DIR / run_id
+    summary = analysis.seq_label_summary(folder / "data" / analysis.SEQ_FILE)
+    row = int(summary.index[summary["label"] == "Macrophage"][0])
+    # Count macrophages as neutrophils (only the menus of the chosen panel are sent)
+    response = client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition",
+                                                            f"label_{row}": "Neutrophils"})
+    assert response.status_code == 302
+    labels = pd.read_csv(folder / "results" / "A_label_assignment.csv").set_index("label")
+    assert labels.loc["Macrophage", "population"] == "Neutrophils" and labels.loc["Macrophage", "changed"]
+    assert "1 scRNA-seq label(s) were put in another population" in client.get(
+        f"/run/{run_id}/results").get_data(as_text=True)
+    # the setup page shows the choice again
+    compact = " ".join(client.get(f"/run/{run_id}").get_data(as_text=True).split())
+    menu = compact.split(f'name="label_{row}" data-panel="{analysis.FACS_PANEL}"')[1].split("</select>")[0]
+    assert '<option value="Neutrophils" selected>' in menu
+    # a population that is not in the panel is refused
+    response = client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition",
+                                                            f"label_{row}": "Hepatocytes"})
+    assert response.status_code == 400 and "not a population of this panel" in response.get_data(as_text=True)
+
+
+# ---- scRNA-seq as an .h5ad file -------------------------------------------------------
+
+def fake_h5ad_from_demo(demo_data, path):
+    """The demo cells as a small .h5ad (like a Flex notebook's output), plus the FACS-only sample sheet."""
+    from test_business_logic import write_fake_h5ad
+    cells = pd.read_csv(demo_data / analysis.SEQ_FILE, dtype={analysis.SAMPLE_COLUMN: str})
+    metadata = pd.read_csv(demo_data / analysis.METADATA_FILE, dtype=str)
+    seq_rows = metadata[metadata["method"] == "scRNA-seq"].set_index(analysis.SAMPLE_COLUMN)
+    cells = cells.assign(leiden_atlas=cells[analysis.CELL_TYPE_COLUMN],
+                         patient_id=cells[analysis.SAMPLE_COLUMN].map(seq_rows["donor_id"]),
+                         role=cells[analysis.SAMPLE_COLUMN].map(seq_rows["condition"]), timepoint="T00")
+    write_fake_h5ad(path, cells)
+    facs_only = path.parent / "facs_samples.csv"
+    metadata[metadata["method"] == "FACS"].to_csv(facs_only, index=False)
+    return path, facs_only
+
+
+def test_upload_h5ad_choose_its_columns_and_run(client, demo_data, tmp_path):
+    h5ad, facs_only = fake_h5ad_from_demo(demo_data, tmp_path / "my_flex.h5ad")
+    files = {"metadata": (open(facs_only, "rb"), "facs_samples.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx"),
+             "seq": (open(h5ad, "rb"), "my_flex.h5ad")}
+    response = client.post("/upload", data=files, content_type="multipart/form-data")
+    assert response.headers["Location"].endswith("/h5ad")
+    run_id = response.headers["Location"].split("/")[-2]
+    # the setup page is not reachable before the columns are chosen
+    assert client.get(f"/run/{run_id}").headers["Location"].endswith("/h5ad")
+
+    page = client.get(f"/run/{run_id}/h5ad").get_data(as_text=True)
+    assert "Which columns of my_flex.h5ad?" in page
+    compact = " ".join(page.split())
+    assert '<option value="sample_id" selected>' in compact          # guessed from the column names
+    assert '<option value="patient_id" selected>' in compact and '<option value="role" selected>' in compact
+    assert '<option value="log1p_cp10k" selected>' in compact
+
+    response = client.post(f"/run/{run_id}/h5ad", data={
+        "sample": "sample_id", "label": "leiden_atlas", "donor": "patient_id", "condition": "role",
+        "extra": ["timepoint"], "layer": "log1p_cp10k"})
+    assert response.status_code == 302
+    folder = web.RUNS_DIR / run_id
+    assert not (folder / "data" / analysis.SEQ_H5AD_FILE).exists()     # the big file is deleted again
+    setup_page = client.get(f"/run/{run_id}").get_data(as_text=True)
+    assert "my_flex.h5ad (cell types from column &#39;leiden_atlas&#39;" in setup_page
+    assert "12 scRNA-seq samples" in setup_page and "(6 samples from 4 people)" in setup_page
+    assert "<b>timepoint</b>" in setup_page
+
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    assert "12 samples of 8 people" in page and "A4_composition_overview.png" in page
+
+
+def test_h5ad_column_that_describes_cells_is_refused(client, demo_data, tmp_path):
+    h5ad, facs_only = fake_h5ad_from_demo(demo_data, tmp_path / "my_flex.h5ad")
+    files = {"metadata": (open(facs_only, "rb"), "facs_samples.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx")}
+    # given as a path on this computer instead of an upload
+    response = client.post("/upload", data={**files, "seq_path": f'"{h5ad}"'}, content_type="multipart/form-data")
+    run_id = response.headers["Location"].split("/")[-2]
+    # the cluster label differs between the cells of a sample: it cannot be the group of a sample
+    response = client.post(f"/run/{run_id}/h5ad", data={"sample": "sample_id", "label": "leiden_atlas",
+                                                         "condition": "leiden_atlas", "layer": "log1p_cp10k"})
+    assert response.status_code == 400
+    assert "has more than one value inside a sample" in response.get_data(as_text=True)
+    assert h5ad.exists()                       # a file given as a path is never deleted
+
+
+def test_scrnaseq_path_that_does_not_exist_is_reported(client, demo_data, tmp_path):
+    files = {"metadata": (open(demo_data / "metadata.csv", "rb"), "metadata.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx")}
+    page = client.post("/upload", data={**files, "seq_path": str(tmp_path / "nothing.h5ad")},
+                       content_type="multipart/form-data", follow_redirects=True).get_data(as_text=True)
+    assert "was not found on this computer" in page
+    assert not any(web.RUNS_DIR.iterdir())
 
 
 def test_unknown_or_unsafe_run_ids_give_404(client):

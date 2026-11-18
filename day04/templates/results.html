@@ -7,7 +7,15 @@
      scRNA-seq: <b>{{ info.conditions["scRNA-seq"] | join(", ") }}</b> ({{ info.n_cells }} cells from {{ info.n_seq_samples }} samples of {{ info.n_seq_people }} people{% if info.seq_source %}; {{ info.seq_source }}{% endif %}) ·
      FACS: <b>{{ info.conditions["FACS"] | join(", ") }}</b> ({{ info.n_facs_samples }} samples)<br>
      {{ n_method_significant }} significant scRNA-seq vs FACS differences ·
-     {{ n_significant }} significant condition differences in proportions (FDR &lt; {{ alpha }})</p>
+     {{ n_significant }} significant condition differences in proportions (FDR &lt; {{ alpha }})
+     {% if info.n_labels_changed %}<br>{{ info.n_labels_changed }} scRNA-seq label(s) were put in another population than in the settings (see the label table in section A).{% endif %}</p>
+  {% if info.notes %}
+  <div class="warning">
+    <p class="label">Read this first: what these results can and cannot show</p>
+    <ul>{% for note in info.notes %}<li>{{ note }}</li>{% endfor %}</ul>
+    <p class="muted">Also saved as <a href="{{ url_for('result_file', run_id=run_id, name='notes.txt') }}">notes.txt</a>.</p>
+  </div>
+  {% endif %}
   <p class="actions">
     <a class="button" href="{{ url_for('download_all', run_id=run_id) }}">Download all results (.zip)</a>
     <a class="button secondary" href="{{ url_for('setup', run_id=run_id) }}">Change conditions</a>
@@ -40,7 +48,17 @@
     <h3>Composition overview: average % of each population per group</h3>
     <div class="table-wrap">{{ section.overview | safe }}</div>
     <p class="muted">n = number of samples (FACS), people (scRNA-seq, samples of one person combined) or atlas donors.
-       A pool is a single sample, so its numbers are its own proportions. Plot A4 below shows the same numbers.</p>
+       A pool is a single sample, so its numbers are its own proportions. Plot A4 below shows the same numbers.
+       {% if info.seq_missing_populations %}Left out here, because scRNA-seq has no cells in it: {{ info.seq_missing_populations | join(", ") }}
+       (the proportions are out of the other populations, for both methods).{% endif %}</p>
+    {% if section.labels %}
+    <details class="help">
+      <summary>Which population each scRNA-seq label was counted in</summary>
+      <div class="table-wrap">{{ section.labels | safe }}</div>
+      <p class="muted"><code>changed</code> = True: you chose another population on the setup page than the settings give.
+         Labels in <i>Other</i> are left out of all proportions.</p>
+    </details>
+    {% endif %}
     <h3>Tests: each scRNA-seq group against each FACS group</h3>
   {% endif %}
   {% if section.table %}

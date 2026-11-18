@@ -37,6 +37,19 @@ so the proportions add up to 100% of live cells. Each population is linked to
 the Flex cell-type labels that would fall into its gate, so FACS and Flex are
 always compared population by population, whichever panel was used.
 
+The program does NOT cluster or annotate the scRNA-seq data: every cell already
+has a cell-type label from the notebook (e.g. "6: myeloid"), and the seq_labels
+in SETTINGS say which FACS population each label is counted in. The web app
+shows every label with its marker genes and lets you change that per run (the
+command line: --label-map). The result is saved as A_label_assignment.csv.
+A population that NO label is counted in (e.g. no proximal tubule cluster) is not
+measured by scRNA-seq: it is left out of the method comparison (sections A and
+E), and the proportions of both methods there are recalculated out of the
+populations both measure, instead of comparing a false 0%.
+Warnings about what the results can show (a single FACS pool, too few samples
+for any significant result, a population scRNA-seq cannot see) are printed and
+saved in notes.txt.
+
 What the program produces (in the results folder):
   A. Cell-type PROPORTIONS, scRNA-seq group vs FACS group
        - composition overview: the average proportions of every FACS group
@@ -48,6 +61,9 @@ What the program produces (in the results folder):
          one side is a single sample (a pool)  : one-sample Wilcoxon test of the
                                                  other side against that value
        - all p-values corrected for multiple testing (Benjamini-Hochberg FDR)
+       - smallest_possible_p: the lowest p the test can reach with these group
+         sizes (above 0.05 = can never be significant, whatever the data)
+       - which population every scRNA-seq label was counted in (A_label_assignment.csv)
   B. Differences between CONDITIONS within each method
        - 2 conditions  : Mann-Whitney U test
        - 3+ conditions : Kruskal-Wallis test + pairwise Mann-Whitney U tests
@@ -85,6 +101,9 @@ HOW TO RUN
   You can skip the questions by giving them directly:
       python facs_vs_scrnaseq.py --condition-column condition \
           --seq-conditions Disease --facs-conditions "Healthy pool" Disease
+  To count some scRNA-seq labels in another population than SETTINGS say, give a
+  CSV with the columns label,population (e.g. an edited A_label_assignment.csv):
+      python facs_vs_scrnaseq.py --label-map my_labels.csv
 
   Or use the web interface instead of the terminal (see app.py):
       python app.py        then open http://127.0.0.1:5000
@@ -138,6 +157,11 @@ INPUT FILES
 
    Why this format: it holds everything needed (labels + the 4 marker genes),
    is small, and opens with pandas alone - no scanpy needed here.
+   In the web app you can instead give the .h5ad file itself (upload, or its
+   path on this computer): a page then asks which obs columns hold the sample,
+   cell type, person and groups, and the app writes this table for you
+   (h5ad_overview / add_h5ad; needs h5py + anndata). Without any scRNA-seq file,
+   the web app uses the default Flex data (DEFAULT_FLEX_H5AD in SETTINGS).
    Export it from your Scanpy notebook like this:
 
        genes = ["PTPRC", "MME", "ANPEP", "EPCAM"]
@@ -192,8 +216,11 @@ INPUT FILES
 # IMPORTS - the libraries this program uses
 # -----------------------------------------------------------------------------
 import argparse            # reads options typed on the command line (--demo, --seq-conditions, ...)
+import contextlib          # lets a block of code use only some populations (sections A and E)
 import functools           # remembers (caches) results that are needed again
 import itertools           # all possible orderings, for the exact Spearman p-value
+import math                # math.comb: number of ways to choose k of n (smallest possible p-value)
+import re                  # splits labels like "10: myeloid" to sort them by cluster number
 from pathlib import Path   # handles file and folder paths the same way on Mac and Windows
 
 import matplotlib
@@ -280,6 +307,19 @@ DEFAULT_FLEX_LABEL_COLUMN = "leiden_atlas"    # cluster + atlas label, e.g. "6: 
 DEFAULT_FLEX_DONOR_COLUMN = "patient_id"      # the person each sample comes from
 DEFAULT_FLEX_CONDITION_COLUMNS = {"condition": "role", "timepoint": "timepoint"}   # sheet column <- obs column
 DEFAULT_FLEX_CACHE_DIR = SCRIPT_DIR / "default_flex"   # not committed to git (patient data)
+
+# ---- Your own .h5ad file (web app) ------------------------------------------------
+# Instead of a scRNA-seq CSV you can give the web app an .h5ad file (scanpy/anndata).
+# A page then asks which obs columns hold the sample, the cell type, the person and
+# the groups; the app pre-selects the first name of each list below that the file has.
+SEQ_H5AD_FILE = "scrnaseq_upload.h5ad"   # an uploaded .h5ad is kept under this name until it is read
+H5AD_COLUMN_GUESSES = {
+    "sample": ["sample_id", "sample", "sample_name", "orig.ident"],
+    "label": ["cell_type", "leiden_atlas", "celltype", "cell_type_annotation", "annotation", "leiden"],
+    "donor": ["donor_id", "patient_id", "donor", "patient", "individual"],
+    "condition": ["condition", "role", "group", "disease", "status"],
+}
+H5AD_LAYER_GUESSES = ["log1p_cp10k", "log1p_norm", "lognorm", "log1p"]   # else the main matrix X
 
 # ---- FlowJo column-name templates --------------------------------------------
 # FlowJo names a statistic column "<gate path> | <statistic>".
@@ -696,12 +736,56 @@ def load_facs(path, metadata):
     return facs.set_index(SAMPLE_COLUMN)
 
 
-def load_seq(path, metadata):
+def settings_label_map(panel):
+    """Dictionary: scRNA-seq label -> population, as listed in the seq_labels of one panel in SETTINGS."""
+    return {label: population
+            for population, info in PANELS[panel]["populations"].items()
+            for label in info["seq_labels"]}
+
+
+def label_sort_key(label):
+    """Sort labels by their cluster number first ("2: ..." before "10: ..."), then by name."""
+    number = re.match(r"\s*(\d+)", str(label))
+    return (0, int(number.group(1)), str(label)) if number else (1, 0, str(label))
+
+
+def seq_label_summary(path):
+    """
+    One row per cell-type label of the scRNA-seq file: how many cells and samples
+    have it, the mean expression of every marker gene in those cells, and the
+    population each panel's SETTINGS put it in (column population_<panel>; labels
+    not listed become "Other"). The web app shows this table on the setup page,
+    so the assignment of every label can be checked and changed before running.
+    """
+    genes = [m["gene"] for m in ALL_MARKERS.values()]
+    needed = {SAMPLE_COLUMN, CELL_TYPE_COLUMN, *genes}
+    cells = pd.read_csv(path, dtype={SAMPLE_COLUMN: str, CELL_TYPE_COLUMN: str}, usecols=lambda c: c in needed)
+    get_column(cells, SAMPLE_COLUMN, path.name)
+    get_column(cells, CELL_TYPE_COLUMN, path.name)
+    present = [g for g in genes if g in cells.columns]
+    summary = (cells.groupby(CELL_TYPE_COLUMN)
+               .agg(n_cells=(SAMPLE_COLUMN, "size"), n_samples=(SAMPLE_COLUMN, "nunique"),
+                    **{gene: (gene, "mean") for gene in present})
+               .reset_index().rename(columns={CELL_TYPE_COLUMN: "label"}))
+    summary = summary.sort_values("label", key=lambda s: s.map(label_sort_key)).reset_index(drop=True)
+    in_any_panel = set()
+    for panel in PANELS:
+        lookup = settings_label_map(panel)
+        summary[f"population_{panel}"] = summary["label"].map(lookup).fillna("Other")
+        in_any_panel |= set(lookup)
+    summary["in_settings"] = summary["label"].isin(in_any_panel)
+    return summary
+
+
+def load_seq(path, metadata, label_map=None):
     """
     Read the per-cell scRNA-seq table and add a 'population' column by
     translating each cell_type label using POPULATIONS[...]["seq_labels"].
     Labels not listed anywhere become 'Other'.
     metadata = the scRNA-seq rows of the sample sheet.
+    label_map = optional {label: population} that replaces SETTINGS for those
+                labels (chosen on the setup page of the web app, or --label-map);
+                "Other" leaves the label out.
     """
     # Read only the columns that are used (the sample, the label and the marker genes):
     # an export with many extra columns then loads much faster and uses less memory.
@@ -715,18 +799,21 @@ def load_seq(path, metadata):
         get_column(cells, marker["gene"], path.name)
 
     # Dictionary: notebook label -> population, e.g. "T cell" -> "Other immune"
-    label_to_population = {
-        label: population
-        for population, info in POPULATIONS.items()
-        for label in info["seq_labels"]
-    }
+    label_to_population = settings_label_map(ACTIVE_PANEL)
+    if label_map:
+        wrong = {label: pop for label, pop in label_map.items() if pop not in POPULATIONS and pop != "Other"}
+        if wrong:
+            raise SystemExit(f"These labels were given a population that is not in the panel: {wrong}. "
+                             f"Choose one of: {', '.join(POPULATIONS)}, Other")
+        label_to_population.update(label_map)
+        print(f"Label assignment: {len(label_map)} label(s) set by you (not from SETTINGS).")
     # Give each cell its population; labels not in SETTINGS become "Other"
     cells["population"] = cells[CELL_TYPE_COLUMN].map(label_to_population).fillna("Other")
 
     # Tell the user which labels were not assigned (maybe one was forgotten in SETTINGS)
-    unmapped = sorted(cells.loc[cells["population"] == "Other", CELL_TYPE_COLUMN].unique())
+    unmapped = sorted(cells.loc[cells["population"] == "Other", CELL_TYPE_COLUMN].unique(), key=label_sort_key)
     if unmapped:
-        print(f"Note: these cell_type labels are not in any population (counted as 'Other'): {unmapped}")
+        print(f"Note: these cell_type labels are not in any population (counted as 'Other', left out): {unmapped}")
 
     # Warn about samples in the metadata that have no cells in the scRNA-seq file
     missing = sorted(set(metadata[SAMPLE_COLUMN]) - set(cells[SAMPLE_COLUMN]))
@@ -741,32 +828,50 @@ DEFAULT_FLEX_CELLS = "flex_cells.csv"      # the two cache files in DEFAULT_FLEX
 DEFAULT_FLEX_SHEET = "flex_samples.csv"
 
 
-def read_h5ad_cells(path, genes, layer, obs_columns):
+def h5ad_reader():
+    """The anndata function that reads one part (obs, var, ...) of an open .h5ad file."""
+    try:
+        from anndata.io import read_elem
+    except ImportError:             # older anndata versions
+        from anndata.experimental import read_elem
+    return read_elem
+
+
+def h5ad_gene_names(var, gene_column=None):
+    """The gene names of an .h5ad file: the var index, or the var column gene_column."""
+    return pd.Index((var[gene_column] if gene_column else var.index).astype(str))
+
+
+def read_h5ad_cells(path, genes, layer, obs_columns, gene_column=None):
     """
     Read from an .h5ad file only what the comparison needs: some per-cell (obs)
     columns and the expression of a few genes in one layer. The file (several GB)
     is never loaded whole: the sparse matrix is read in chunks of cells and only
     the wanted genes are kept. Returns one row per cell.
+    layer = a name in .layers, or None / "X" for the main matrix.
+    gene_column = the var column with the gene symbols (None = the var index).
     """
     import h5py                     # imported here: only needed for .h5ad files
-    try:
-        from anndata.io import read_elem
-    except ImportError:             # older anndata versions
-        from anndata.experimental import read_elem
+    read_elem = h5ad_reader()
+    path = Path(path)
+    layer = None if layer in (None, "", "X") else layer
 
     with h5py.File(path, "r") as f:
         obs = read_elem(f["obs"])
         for column in obs_columns:
             get_column(obs, column, path.name)
-        gene_names = pd.Index(read_elem(f["var"]).index)
+        gene_names = h5ad_gene_names(read_elem(f["var"]), gene_column)
         missing = [g for g in genes if g not in gene_names]
         if missing:
             raise SystemExit(f"These genes are not in {path.name}: {missing}")
         key = f"layers/{layer}" if layer else "X"
         if key not in f:
-            raise SystemExit(f"{path.name} has no layer '{layer}'. Change DEFAULT_FLEX_LAYER in SETTINGS.")
+            layers = list(f["layers"].keys()) if "layers" in f else []
+            raise SystemExit(f"{path.name} has no layer '{layer}' (it has: {', '.join(layers) or 'none'}, "
+                             "plus the main matrix X). For the default Flex data, change DEFAULT_FLEX_LAYER in SETTINGS.")
         matrix = f[key]
-        gene_index = gene_names.get_indexer(genes)
+        # The column number of each gene (a gene name listed twice: its first column is used)
+        gene_index = np.array([np.flatnonzero(gene_names == g)[0] for g in genes])
         expression = np.zeros((len(obs), len(genes)), dtype=np.float32)
 
         if isinstance(matrix, h5py.Dataset):
@@ -795,6 +900,104 @@ def read_h5ad_cells(path, genes, layer, obs_columns):
     return pd.concat([cells, pd.DataFrame(expression, columns=genes)], axis=1)
 
 
+def h5ad_tables(path, sample_column, label_column, donor_column=None, group_columns=None,
+                layer=None, gene_column=None):
+    """
+    Read an .h5ad file into the two tables the analysis uses:
+      cells : one row per cell - sample_id, cell_type (from label_column) and the marker genes
+      sheet : one sample-sheet row per sample - sample_id, method = scRNA-seq,
+              donor_id (from donor_column, if given) and one column per group column
+    group_columns = {name in the sample sheet: obs column}, e.g. {"condition": "role"}.
+    A donor or group column must have ONE value per sample (it describes samples,
+    not cells); a column that differs between the cells of a sample is refused.
+    """
+    path = Path(path)
+    genes = [m["gene"] for m in ALL_MARKERS.values()]
+    group_columns = dict(group_columns or {})
+    sample_columns = {**({DONOR_COLUMN: donor_column} if donor_column else {}), **group_columns}
+    table = read_h5ad_cells(path, genes, layer, [sample_column, label_column, *sample_columns.values()],
+                            gene_column)
+    cells = pd.DataFrame({SAMPLE_COLUMN: table[sample_column], CELL_TYPE_COLUMN: table[label_column]})
+    cells[genes] = table[genes]
+
+    # One sample-sheet row per sample: its person and its groups
+    sheet = pd.DataFrame({SAMPLE_COLUMN: table[sample_column], METHOD_COLUMN: "scRNA-seq",
+                          **{name: table[column] for name, column in sample_columns.items()}})
+    for name, column in sample_columns.items():
+        per_sample = sheet.groupby(SAMPLE_COLUMN)[name].nunique()
+        if (per_sample > 1).any():
+            raise SystemExit(f"The column '{column}' of {path.name} has more than one value inside a sample "
+                             f"(e.g. sample {per_sample[per_sample > 1].index[0]}), so it describes cells, "
+                             "not samples. Choose another column for the person / the groups.")
+    sheet = sheet.drop_duplicates(SAMPLE_COLUMN).sort_values(SAMPLE_COLUMN).reset_index(drop=True)
+    return cells, sheet.astype(str)
+
+
+def h5ad_overview(path):
+    """
+    What an .h5ad file holds, for choosing its columns in the web app (only obs,
+    var and the layer names are read, never the expression matrix):
+      n_cells, columns (every obs column with its number of different values and
+      a few examples), layers ("X" = the main matrix, then .layers), gene_column
+      (where the marker genes are: None = the var index, else a var column name;
+      missing_genes lists genes found nowhere) and guesses (pre-selected choices).
+    """
+    import h5py
+    read_elem = h5ad_reader()
+    with h5py.File(path, "r") as f:
+        obs = read_elem(f["obs"])
+        var = read_elem(f["var"])
+        layers = ["X", *(f["layers"].keys() if "layers" in f else [])]
+    genes = [m["gene"] for m in ALL_MARKERS.values()]
+
+    # Where are the marker genes: in the var index, or in a var column (e.g. gene symbols next to Ensembl IDs)?
+    gene_column, missing_genes = None, [g for g in genes if g not in h5ad_gene_names(var)]
+    for column in var.columns:
+        if not missing_genes:
+            break
+        names = h5ad_gene_names(var, column)
+        still_missing = [g for g in genes if g not in names]
+        if len(still_missing) < len(missing_genes):
+            gene_column, missing_genes = column, still_missing
+
+    columns = []
+    for column in obs.columns:
+        values = obs[column].dropna().astype(str).unique()
+        columns.append({"name": column, "n_values": len(values),
+                        "examples": sorted(values, key=label_sort_key)[:4]})
+    names = [c["name"] for c in columns]
+
+    def first_present(candidates):
+        return next((c for c in candidates if c in names), None)
+
+    guesses = {role: first_present(candidates) for role, candidates in H5AD_COLUMN_GUESSES.items()}
+    guesses["layer"] = next((layer for layer in H5AD_LAYER_GUESSES if layer in layers), "X")
+    return {"n_cells": len(obs), "columns": columns, "layers": layers, "gene_column": gene_column,
+            "missing_genes": missing_genes, "guesses": guesses}
+
+
+def add_seq_tables(data_dir, cells, sheet, source):
+    """
+    Put scRNA-seq cells into data_dir (as SEQ_FILE), and add their samples to the
+    sample sheet - only if the sheet lists no scRNA-seq samples of its own (then
+    those rows are used as written). source = a name for the messages.
+    """
+    data_dir = Path(data_dir)
+    cells.to_csv(data_dir / SEQ_FILE, index=False)
+    metadata_path = data_dir / METADATA_FILE
+    metadata = pd.read_csv(metadata_path, dtype=str)
+    if METHOD_COLUMN not in metadata.columns:
+        # An old sheet without a method column: its samples are taken as the FACS samples
+        metadata[METHOD_COLUMN] = "FACS"
+    if metadata[METHOD_COLUMN].map(normalize_method).eq("scRNA-seq").any():
+        print(f"Using the cells of {source} for the scRNA-seq samples listed in {METADATA_FILE}.")
+    else:
+        metadata = pd.concat([metadata, sheet], ignore_index=True)
+        people = f" ({sheet[DONOR_COLUMN].nunique()} people)" if DONOR_COLUMN in sheet.columns else ""
+        print(f"Using {source}: added its {len(sheet)} samples{people} to {METADATA_FILE}.")
+    metadata.to_csv(metadata_path, index=False)
+
+
 def default_flex_tables():
     """
     The default Flex data as two tables: the cells (sample_id, cell_type and the
@@ -817,22 +1020,12 @@ def default_flex_tables():
                          "Is the drive connected? Otherwise upload a scRNA-seq file.")
 
     print(f"Reading the default Flex data from {source.name} (only the first time; takes a minute)...")
-    conditions = DEFAULT_FLEX_CONDITION_COLUMNS
-    table = read_h5ad_cells(source, genes, DEFAULT_FLEX_LAYER,
-                            [SAMPLE_COLUMN, DEFAULT_FLEX_LABEL_COLUMN, DEFAULT_FLEX_DONOR_COLUMN,
-                             *conditions.values()])
-    cells = table[[SAMPLE_COLUMN, DEFAULT_FLEX_LABEL_COLUMN, *genes]].rename(
-        columns={DEFAULT_FLEX_LABEL_COLUMN: CELL_TYPE_COLUMN})
-    # One sample-sheet row per sample: its person and its conditions
-    sheet = pd.DataFrame({SAMPLE_COLUMN: table[SAMPLE_COLUMN], METHOD_COLUMN: "scRNA-seq",
-                          DONOR_COLUMN: table[DEFAULT_FLEX_DONOR_COLUMN],
-                          **{name: table[column] for name, column in conditions.items()}})
-    sheet = sheet.drop_duplicates(SAMPLE_COLUMN).sort_values(SAMPLE_COLUMN).reset_index(drop=True)
-
+    cells, sheet = h5ad_tables(source, SAMPLE_COLUMN, DEFAULT_FLEX_LABEL_COLUMN, DEFAULT_FLEX_DONOR_COLUMN,
+                               DEFAULT_FLEX_CONDITION_COLUMNS, DEFAULT_FLEX_LAYER)
     DEFAULT_FLEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cells.to_csv(cells_path, index=False)
     sheet.to_csv(sheet_path, index=False)
-    return pd.read_csv(cells_path, dtype={SAMPLE_COLUMN: str, CELL_TYPE_COLUMN: str}), sheet.astype(str)
+    return pd.read_csv(cells_path, dtype={SAMPLE_COLUMN: str, CELL_TYPE_COLUMN: str}), sheet
 
 
 def add_default_flex(data_dir):
@@ -845,21 +1038,21 @@ def add_default_flex(data_dir):
     if (data_dir / SEQ_FILE).exists():
         return False
     cells, sheet = default_flex_tables()
-    cells.to_csv(data_dir / SEQ_FILE, index=False)
-
-    metadata_path = data_dir / METADATA_FILE
-    metadata = pd.read_csv(metadata_path, dtype=str)
-    if METHOD_COLUMN not in metadata.columns:
-        # An old sheet without a method column: its samples are taken as the FACS samples
-        metadata[METHOD_COLUMN] = "FACS"
-    if metadata[METHOD_COLUMN].map(normalize_method).eq("scRNA-seq").any():
-        print(f"Using the default Flex cells for the scRNA-seq samples listed in {METADATA_FILE}.")
-    else:
-        metadata = pd.concat([metadata, sheet], ignore_index=True)
-        print(f"Using the default Flex data: added its {len(sheet)} samples "
-              f"({sheet[DONOR_COLUMN].nunique()} people) to {METADATA_FILE}.")
-    metadata.to_csv(metadata_path, index=False)
+    add_seq_tables(data_dir, cells, sheet, "the default Flex data")
     return True
+
+
+def add_h5ad(data_dir, path, sample_column, label_column, donor_column=None, group_columns=None,
+             layer=None, gene_column=None):
+    """
+    Your own .h5ad file as the scRNA-seq data: read the chosen columns (see
+    h5ad_tables) and put the cells and samples into data_dir, like add_default_flex.
+    Returns the number of cells.
+    """
+    cells, sheet = h5ad_tables(path, sample_column, label_column, donor_column, group_columns,
+                               layer, gene_column)
+    add_seq_tables(data_dir, cells, sheet, Path(path).name)
+    return len(cells)
 
 
 # =============================================================================
@@ -1182,6 +1375,26 @@ def compare_to_reference(values, reference):
     return test, statistic, p
 
 
+def smallest_possible_p(n_values, n_reference):
+    """
+    The smallest p-value compare_to_reference() can give with these group sizes,
+    WHATEVER the data are. If it is above ALPHA, that comparison can never come
+    out significant: there are simply too few samples.
+      both groups >= MIN_SAMPLES_PER_GROUP : Mann-Whitney U, 2 / C(n1 + n2, n1)
+      one group against a single value     : one-sample Wilcoxon of n values, 2 / 2^n
+    NaN when no test is possible.
+    """
+    enough_values = n_values >= MIN_SAMPLES_PER_GROUP
+    enough_reference = n_reference >= MIN_SAMPLES_PER_GROUP
+    if enough_values and enough_reference:
+        return min(1.0, 2 / math.comb(n_values + n_reference, n_values))
+    if enough_values and n_reference:
+        return min(1.0, 2 / 2 ** n_values)
+    if enough_reference and n_values:
+        return min(1.0, 2 / 2 ** n_reference)
+    return np.nan
+
+
 def bootstrap_median_difference(values, reference, rounds=None):
     """
     95% interval of median(values) - median(reference), by bootstrap: both groups
@@ -1247,6 +1460,7 @@ def method_comparison_stats(proportions, condition_column, conditions):
                     "seq_minus_facs_ci95_low": low, "seq_minus_facs_ci95_high": high,
                     "seq_to_facs_ratio": median_seq / median_facs if median_facs > 0 else np.nan,
                     "test": METHOD_TEST_NAMES.get(test, test), "statistic": statistic, "p_value": p,
+                    "smallest_possible_p": smallest_possible_p(len(seq), len(facs)),
                 })
     table = pd.DataFrame(rows)
     # Correct for all tests in the table, then flag the significant ones
@@ -1289,6 +1503,111 @@ def composition_overview(proportions, condition_column, conditions, atlas_props=
                          "population": pop, "n": atlas_props["donor"].nunique(), **describe(donors),
                          "atlas_all_cells": pooled[pop]})
     return pd.DataFrame(rows)
+
+
+def populations_without_seq_cells(cells):
+    """
+    The populations of the panel that NO scRNA-seq cell was assigned to - e.g. the
+    proximal tubule when the scRNA-seq data have no proximal tubule cluster. For
+    scRNA-seq that population is not measured, so its 0% is not a real 0.
+    """
+    seen = set(cells["population"])
+    return [pop for pop in POPULATIONS if pop not in seen]
+
+
+def keep_populations(table, populations, sample_keys):
+    """
+    Keep only these populations, and (with PROPORTION_DENOMINATOR = "populations")
+    divide every count again by the sum of the KEPT populations of its sample, so
+    both methods share the same denominator. sample_keys = the columns that make
+    one sample, e.g. [sample_id, method] (or ["donor"] for the atlas).
+    """
+    table = table[table["population"].isin(populations)].copy()
+    if PROPORTION_DENOMINATOR == "populations":
+        table["total"] = table.groupby(sample_keys, sort=False, dropna=False)["count"].transform("sum")
+        table["proportion"] = table["count"] / table["total"].where(table["total"] > 0)
+    return table
+
+
+@contextlib.contextmanager
+def only_populations(populations):
+    """
+    Inside a 'with only_populations([...]):' block, POPULATIONS holds only these
+    populations, so every function and plot in the block leaves the others out
+    (used for sections A and E when scRNA-seq cannot see a population).
+    """
+    global POPULATIONS
+    everything = POPULATIONS
+    POPULATIONS = {pop: info for pop, info in everything.items() if pop in populations}
+    try:
+        yield
+    finally:
+        POPULATIONS = everything
+
+
+def not_compared_rows(missing, conditions):
+    """Section A rows for the populations scRNA-seq cannot see: listed, but not tested."""
+    return pd.DataFrame([{"population": pop, "comparison": f"{seq_group} (scRNA-seq) vs {facs_group} (FACS)",
+                          "seq_group": seq_group, "facs_group": facs_group,
+                          "test": "not compared: no scRNA-seq cells in this population",
+                          "significant": False}
+                         for seq_group in conditions["scRNA-seq"] for facs_group in conditions["FACS"]
+                         for pop in missing])
+
+
+def label_assignment_table(cells, label_map=None):
+    """
+    Which population every scRNA-seq label was counted in for this run, with its
+    number of cells, the population SETTINGS give it, and whether it was changed
+    (on the setup page of the web app or with --label-map).
+    """
+    settings = settings_label_map(ACTIVE_PANEL)
+    table = (cells.groupby(CELL_TYPE_COLUMN).agg(n_cells=("population", "size"), population=("population", "first"))
+             .reset_index().rename(columns={CELL_TYPE_COLUMN: "label"}))
+    table = table.sort_values("label", key=lambda s: s.map(label_sort_key)).reset_index(drop=True)
+    table["population_in_settings"] = table["label"].map(settings).fillna("Other")
+    table["changed"] = table["population"] != table["population_in_settings"]
+    return table
+
+
+def interpretation_notes(comparison, missing):
+    """
+    Plain-language warnings about what the results can and cannot show, written
+    to notes.txt and shown at the top of the results page:
+      - populations scRNA-seq cannot see (left out of sections A and E)
+      - a FACS group of ONE sample (a pool): the comparison is descriptive
+      - comparisons that can never be significant with these group sizes
+      - comparisons with too few samples for any test
+    comparison = the section A table (method_comparison_stats).
+    """
+    notes = []
+    if missing:
+        names = ", ".join(missing)
+        notes.append(
+            f"scRNA-seq has no cells in: {names}. No scRNA-seq label is assigned to "
+            f"{'this population' if len(missing) == 1 else 'these populations'}, so scRNA-seq does not measure "
+            f"{'it' if len(missing) == 1 else 'them'} - a 0% would not be a real 0. Sections A and E therefore leave "
+            f"{names} out and calculate the proportions of both methods out of the populations both methods "
+            f"measure. Section B still includes {names} for FACS. If these cells are in your scRNA-seq data "
+            "under another label, assign that label on the setup page.")
+    tested = comparison[~comparison["test"].astype(str).str.startswith("not compared")]
+    for group in sorted(set(tested.loc[tested["n_facs"] == 1, "facs_group"])):
+        notes.append(
+            f"The FACS group '{group}' is a single sample (e.g. a pool). Section A compares the scRNA-seq "
+            "people with this ONE value: the test asks whether the people are centred on it. How much a "
+            "pool would vary if it were measured again is unknown, so these comparisons describe the "
+            "difference; they cannot prove that the two methods differ.")
+    for name, part in tested.groupby("comparison", sort=False):
+        lowest = part["smallest_possible_p"].min()
+        if part["smallest_possible_p"].isna().all():
+            notes.append(f"'{name}': too few samples for any test (at least {MIN_SAMPLES_PER_GROUP} are needed "
+                         "on one side). Only the medians and their difference are shown.")
+        elif lowest > ALPHA:
+            notes.append(f"'{name}': with {int(part['n_seq'].max())} scRNA-seq and {int(part['n_facs'].max())} "
+                         f"FACS value(s), the smallest possible p-value is {lowest:.3g} - above {ALPHA}, so no "
+                         "population can come out significant, whatever the data. Read the differences and their "
+                         "intervals instead of the p-values.")
+    return notes
 
 
 def composition_overview_wide(overview):
@@ -1389,8 +1708,9 @@ plt.rcParams.update({
 
 
 def population_color(pop):
-    # Each population always gets the same color in every plot
-    return POPULATION_COLORS[list(POPULATIONS).index(pop) % len(POPULATION_COLORS)]
+    # Each population always gets the same color in every plot (also when sections A
+    # and E leave out a population that scRNA-seq cannot see: the panel order is used)
+    return POPULATION_COLORS[list(PANELS[ACTIVE_PANEL]["populations"]).index(pop) % len(POPULATION_COLORS)]
 
 
 def save(fig, name):
@@ -1787,7 +2107,8 @@ def atlas_comparison_stats(proportions, atlas_props, condition_column, condition
                              "atlas_donor_median": np.median(donors) if len(donors) else np.nan,
                              "difference": median - pooled[pop],       # positive = more than in the atlas
                              "n_atlas_donors": len(donors),
-                             "test": ATLAS_TEST_NAMES.get(test, test), "statistic": statistic, "p_value": p})
+                             "test": ATLAS_TEST_NAMES.get(test, test), "statistic": statistic, "p_value": p,
+                             "smallest_possible_p": smallest_possible_p(len(values), len(reference))})
     table = pd.DataFrame(rows)
     # Correct for all tests in the table, then flag the significant ones
     table["q_value_fdr"] = fdr_correct(table["p_value"])
@@ -2665,7 +2986,7 @@ def make_demo_data(folder):
 # the web app (app.py). main() only handles the command-line options.
 
 def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=None, facs_conditions=None,
-                 panel=None):
+                 panel=None, label_map=None):
     """
     Run steps 1-5 on the input files in data_dir, plus section E (if an atlas
     file is there) and section F (if imaging features are set), and write every
@@ -2673,6 +2994,7 @@ def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=Non
     interface (app.py). Anything not given (condition column, the scRNA-seq
     conditions, the FACS conditions) is asked in the terminal.
     panel = which FACS panel was used (a key of PANELS); None = FACS_PANEL from SETTINGS.
+    label_map = optional {scRNA-seq label: population} that replaces SETTINGS for those labels.
     Returns the summary tables so the caller can show them.
     """
     # OUTPUT_DIR is changed for the whole script so save() writes to the right folder
@@ -2692,15 +3014,27 @@ def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=Non
                         for m in METHODS], ignore_index=True)
     seq_metadata, facs_metadata = samples_of(chosen, "scRNA-seq"), samples_of(chosen, "FACS")
     facs = load_facs(data_dir / FACS_FILE, facs_metadata)
-    cells = load_seq(data_dir / SEQ_FILE, seq_metadata)
+    cells = load_seq(data_dir / SEQ_FILE, seq_metadata, label_map)
     if facs.empty:
         raise SystemExit(f"None of the chosen FACS samples were found in {FACS_FILE}. "
                          f"Check the '{FACS_NAME_COLUMN}' column of the sample sheet.")
     if cells.empty:
         raise SystemExit(f"None of the chosen scRNA-seq samples have cells in {SEQ_FILE}. "
                          f"Check the '{SAMPLE_COLUMN}' column of both files.")
+    if not cells["population"].isin(list(POPULATIONS)).any():
+        raise SystemExit("None of the scRNA-seq labels is assigned to a population of this panel, so every "
+                         "cell counts as 'Other'. Assign the labels on the setup page (or in the seq_labels "
+                         "of PANELS in SETTINGS).")
     print(f"Loaded {len(facs)} FACS samples and {len(cells)} cells "
           f"from {cells[SAMPLE_COLUMN].nunique()} scRNA-seq samples.")
+    labels = label_assignment_table(cells, label_map)
+    # Populations no scRNA-seq cell was assigned to: left out of the method comparison (A and E)
+    missing = populations_without_seq_cells(cells)
+    shared = [pop for pop in POPULATIONS if pop not in missing]
+    if missing:
+        print(f"Note: no scRNA-seq cells in {', '.join(missing)} - scRNA-seq does not measure "
+              f"{'it' if len(missing) == 1 else 'them'}, so sections A and E compare the methods "
+              f"on {', '.join(shared)} only.")
 
     # --- Step 2: build tables ---
     # Proportions per sample, then per PERSON (samples of the same person combined):
@@ -2722,31 +3056,51 @@ def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=Non
     if atlas_path.exists():
         atlas = load_atlas(atlas_path)
         atlas_props = build_atlas_proportions(atlas)
+    # Sections A and E compare the methods: there, both methods (and the atlas) use
+    # only the populations scRNA-seq measures, with proportions recalculated out of those
+    compared, atlas_compared = proportions, atlas_props
+    if missing:
+        compared = keep_populations(proportions, shared, [SAMPLE_COLUMN, "method"])
+        if atlas_props is not None:
+            atlas_compared = keep_populations(atlas_props, shared, ["donor"])
 
     # --- Step 3: statistics ---
-    overview = composition_overview(proportions, condition_column, conditions, atlas_props)  # section A
-    comparison = method_comparison_stats(proportions, condition_column, conditions)       # section A
+    with only_populations(shared):
+        overview = composition_overview(compared, condition_column, conditions, atlas_compared)  # section A
+        comparison = method_comparison_stats(compared, condition_column, conditions)            # section A
     by_condition = condition_stats(proportions, "proportion", ["population", "method"],
                                    condition_column, all_conditions(conditions))           # section B
     rna_stats = protein_rna_stats(protein_rna)                                              # section C
+    notes = interpretation_notes(comparison, missing)
 
     # --- Step 4: save tables ---
     print("\nSaving results to", OUTPUT_DIR)
+    labels.to_csv(OUTPUT_DIR / "A_label_assignment.csv", index=False)
     sample_proportions.to_csv(OUTPUT_DIR / "A_proportions_per_sample.csv", index=False)
     proportions.to_csv(OUTPUT_DIR / "A_proportions.csv", index=False)
+    if missing:
+        compared.to_csv(OUTPUT_DIR / "A_proportions_compared_populations.csv", index=False)
     overview.to_csv(OUTPUT_DIR / "A_composition_overview.csv", index=False)
-    comparison.to_csv(OUTPUT_DIR / "A_method_comparison_stats.csv", index=False)
+    # The populations scRNA-seq cannot see are listed in the test table, without a test
+    full_comparison = (pd.concat([comparison, not_compared_rows(missing, conditions)], ignore_index=True)
+                       if missing else comparison)
+    full_comparison.to_csv(OUTPUT_DIR / "A_method_comparison_stats.csv", index=False)
     by_condition.to_csv(OUTPUT_DIR / "B_condition_tests_proportions.csv", index=False)
     facs_markers.to_csv(OUTPUT_DIR / "C_protein_per_sample.csv", index=False)
     rna_markers.to_csv(OUTPUT_DIR / "C_rna_per_sample.csv", index=False)
     protein_rna.to_csv(OUTPUT_DIR / "C_protein_vs_rna.csv", index=False)
     rna_stats.to_csv(OUTPUT_DIR / "C_protein_vs_rna_stats.csv", index=False)
+    (OUTPUT_DIR / "notes.txt").write_text("\n\n".join(notes) + "\n" if notes else "No warnings.\n",
+                                          encoding="utf-8")
+    for note in notes:
+        print(f"\nNOTE: {note}")
 
     # --- Step 5: plots ---
-    plot_stacked_proportions(proportions, condition_column, conditions)
-    plot_method_boxes(proportions, condition_column, conditions)
-    plot_method_difference(comparison)
-    plot_composition_overview(overview)
+    with only_populations(shared):
+        plot_stacked_proportions(compared, condition_column, conditions)
+        plot_method_boxes(compared, condition_column, conditions)
+        plot_method_difference(comparison)
+        plot_composition_overview(overview)
     # Comparing conditions only makes sense when a method has at least two of them
     if any(len(conditions[m]) > 1 for m in METHODS):
         plot_proportions_by_condition(proportions, condition_column, all_conditions(conditions))
@@ -2767,8 +3121,9 @@ def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=Non
     atlas_tests = None
     if atlas is not None:
         print("\nComparing with the reference atlas ...")
-        atlas_tests = run_atlas_comparison(atlas, atlas_props, proportions, cells, facs_markers,
-                                           condition_column, conditions)
+        with only_populations(shared):
+            atlas_tests = run_atlas_comparison(atlas, atlas_compared, compared, cells, facs_markers,
+                                               condition_column, conditions)
     else:
         print(f"\nNo reference atlas ({ATLAS_FILE}) found - section E skipped.")
 
@@ -2791,8 +3146,11 @@ def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=Non
         "n_seq_samples": cells[SAMPLE_COLUMN].nunique(),
         "n_seq_people": proportions.loc[proportions["method"] == "scRNA-seq", SAMPLE_COLUMN].nunique(),
         "overview": overview,
-        "comparison": comparison,
+        "comparison": full_comparison,
         "by_condition": by_condition,
+        "labels": labels,
+        "seq_missing_populations": missing,
+        "notes": notes,
         "rna_stats": rna_stats,
         "imaging_pop": imaging_pop,
         "imaging_cond": imaging_cond,
@@ -2808,7 +3166,16 @@ def main():
     parser.add_argument("--facs-conditions", nargs="+", help="conditions of the FACS samples to include (default: ask)")
     parser.add_argument("--panel", choices=list(PANELS),
                         help=f"antibodies used on FACS (default: FACS_PANEL in SETTINGS = {FACS_PANEL})")
+    parser.add_argument("--label-map", type=Path,
+                        help="CSV with columns 'label' and 'population': puts these scRNA-seq labels in these "
+                             "populations instead of the seq_labels of SETTINGS ('Other' = leave out). "
+                             "A_label_assignment.csv of an earlier run can be edited and used here.")
     args = parser.parse_args()
+    label_map = None
+    if args.label_map:
+        table = pd.read_csv(args.label_map, dtype=str)
+        label_map = dict(zip(get_column(table, "label", args.label_map.name),
+                             get_column(table, "population", args.label_map.name)))
 
     # Use the real data folders, or create demo data and use demo folders instead
     data_dir, output_dir = DATA_DIR, OUTPUT_DIR
@@ -2819,7 +3186,7 @@ def main():
 
     # Run the whole analysis (steps 1-5, plus E and F)
     results = run_analysis(data_dir, output_dir, args.condition_column, args.seq_conditions, args.facs_conditions,
-                           args.panel)
+                           args.panel, label_map)
     comparison, by_condition = results["comparison"], results["by_condition"]
 
     # --- Step 6: short summary in the terminal ---

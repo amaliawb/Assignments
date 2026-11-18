@@ -1032,3 +1032,142 @@ def test_condition_candidates_leave_out_ids_barcodes_and_empty_columns():
                              "flex_probe_barcode": [None, "BC001"], "raw_file": ["x", "y"],
                              "batch_id": ["1", "2"], "notes": [None, None], "timepoint": [None, "T00"]})
     assert analysis.condition_candidates(metadata) == ["condition", "timepoint"]
+
+
+# =============================================================================
+# 6. CHECKING THE LABELS, YOUR OWN .h5ad, POPULATIONS scRNA-seq CANNOT SEE,
+#    AND WHAT THE STATISTICS CAN SHOW
+# =============================================================================
+
+def test_label_sort_key_puts_cluster_numbers_in_numeric_order():
+    labels = ["10: myeloid", "2: T", "B cell", "1: epithelium", "A cell"]
+    assert sorted(labels, key=analysis.label_sort_key) == ["1: epithelium", "2: T", "10: myeloid", "A cell", "B cell"]
+
+
+def test_seq_label_summary_counts_cells_genes_and_populations(tmp_path):
+    cells = fake_flex_cells().rename(columns={"leiden_atlas": analysis.CELL_TYPE_COLUMN})
+    cells.loc[0, analysis.CELL_TYPE_COLUMN] = "99: unknown"
+    cells.to_csv(tmp_path / "cells.csv", index=False)
+    summary = analysis.seq_label_summary(tmp_path / "cells.csv").set_index("label")
+    assert list(summary.index) == ["3: ascending_thick_LOH_kidney ?", "6: myeloid", "99: unknown"]
+    # 6: myeloid = 3 cells in 3 samples, PTPRC mean (1.5 + 0 + 3) / 3
+    assert summary.loc["6: myeloid", "n_cells"] == 3 and summary.loc["6: myeloid", "n_samples"] == 3
+    assert summary.loc["6: myeloid", "PTPRC"] == pytest.approx(1.5)
+    # the population of every panel comes from SETTINGS; unknown labels are "Other" and flagged
+    for panel in analysis.PANELS:
+        assert summary.loc["6: myeloid", f"population_{panel}"] == "Neutrophils"
+        assert summary.loc["99: unknown", f"population_{panel}"] == "Other"
+    assert summary.loc["6: myeloid", "in_settings"] and not summary.loc["99: unknown", "in_settings"]
+
+
+def test_load_seq_label_map_replaces_settings_for_those_labels(tmp_path):
+    lines = [f"{S},cell_type,PTPRC,MME,ANPEP,EPCAM", "s1,Macrophage,1,0,0,0", "s1,T cell,1,0,0,0",
+             "s1,new cluster,0,0,0,1"]
+    write_csv(tmp_path / "cells.csv", "\n".join(lines))
+    metadata = pd.DataFrame({S: ["s1"]})
+    cells = analysis.load_seq(tmp_path / "cells.csv", metadata,
+                              {"Macrophage": "Neutrophils", "new cluster": "EpCAM-high epithelium"})
+    assert list(cells["population"]) == ["Neutrophils", "Other immune", "EpCAM-high epithelium"]
+    with pytest.raises(SystemExit, match="not in the panel"):
+        analysis.load_seq(tmp_path / "cells.csv", metadata, {"Macrophage": "Hepatocytes"})
+
+
+def test_smallest_possible_p_for_each_test():
+    assert analysis.smallest_possible_p(4, 1) == pytest.approx(0.125)       # Wilcoxon, 2 / 2^4
+    assert analysis.smallest_possible_p(1, 6) == pytest.approx(2 / 64)      # the other way round
+    assert analysis.smallest_possible_p(3, 3) == pytest.approx(0.1)         # Mann-Whitney, 2 / C(6, 3)
+    assert analysis.smallest_possible_p(6, 6) == pytest.approx(2 / 924)
+    assert np.isnan(analysis.smallest_possible_p(2, 2))                     # no test possible
+    # it really is the smallest p the tests give: the most extreme data reach it exactly
+    assert stats.mannwhitneyu([1, 2, 3], [4, 5, 6]).pvalue == pytest.approx(0.1)
+    assert stats.wilcoxon([1, 2, 3, 4]).pvalue == pytest.approx(0.125)
+
+
+def test_keep_populations_divides_by_the_kept_populations_only():
+    table = make_proportions({"a": [0.5, 0.3, 0.2, 0, 0], "b": [0.4, 0.4, 0.2, 0, 0]})
+    table = table[table["population"].isin(POPS[:3])].copy()
+    table["count"] = table["proportion"] * 100
+    kept = analysis.keep_populations(table, POPS[:2], [S, "method"])
+    assert set(kept["population"]) == set(POPS[:2])
+    # sample a, method FACS: 50 and 30 cells -> 50/80 and 30/80
+    part = kept[(kept[S] == "a") & (kept["method"] == "FACS")].set_index("population")
+    assert part.loc[POPS[0], "proportion"] == pytest.approx(50 / 80)
+    assert kept.groupby([S, "method"])["proportion"].sum().round(9).eq(1).all()
+
+
+def test_only_populations_is_undone_after_the_block():
+    everything = list(analysis.POPULATIONS)
+    with analysis.only_populations(everything[:2]):
+        assert list(analysis.POPULATIONS) == everything[:2]
+        # colors follow the whole panel, so a population keeps its color
+        assert analysis.population_color(everything[1]) == analysis.POPULATION_COLORS[1]
+    assert list(analysis.POPULATIONS) == everything
+
+
+def test_populations_without_seq_cells():
+    cells = pd.DataFrame({"population": [POPS[0], POPS[0], "Other", POPS[2]]})
+    assert analysis.populations_without_seq_cells(cells) == [p for p in POPS if p not in (POPS[0], POPS[2])]
+
+
+def test_interpretation_notes():
+    comparison = pd.DataFrame({
+        "comparison": ["X (scRNA-seq) vs Pool (FACS)"] * 2 + ["Y (scRNA-seq) vs Z (FACS)"] * 2,
+        "facs_group": ["Pool", "Pool", "Z", "Z"], "n_seq": [4, 4, 6, 6], "n_facs": [1, 1, 6, 6],
+        "test": ["Wilcoxon: scRNA-seq vs single FACS value"] * 2 + ["Mann-Whitney U"] * 2,
+        "smallest_possible_p": [0.125, 0.125, 2 / 924, 2 / 924]})
+    notes = analysis.interpretation_notes(comparison, ["Proximal tubule"])
+    assert len(notes) == 3          # missing population, the pool, the comparison that can never be significant
+    assert "no cells in: Proximal tubule" in notes[0]
+    assert "'Pool' is a single sample" in notes[1]
+    assert "'X (scRNA-seq) vs Pool (FACS)'" in notes[2] and "0.125" in notes[2]
+    assert analysis.interpretation_notes(comparison.iloc[2:], []) == []    # 6 vs 6: nothing to warn about
+
+
+def write_h5ad_with_gene_ids(path):
+    """Like write_fake_h5ad, but with Ensembl IDs as the gene index and the symbols in var['gene_symbols']."""
+    anndata = pytest.importorskip("anndata")
+    from scipy import sparse
+    cells = fake_flex_cells()
+    obs = cells[[S, "leiden_atlas", "patient_id", "role", "timepoint"]].astype("category")
+    obs.index = [f"cell{i}" for i in range(len(cells))]
+    var = pd.DataFrame({"gene_symbols": GENES}, index=[f"ENSG0000{i}" for i in range(len(GENES))])
+    adata = anndata.AnnData(X=sparse.csr_matrix(cells[GENES].to_numpy(float)), obs=obs, var=var)
+    adata.write_h5ad(path)
+    return path
+
+
+def test_h5ad_overview_guesses_the_columns_and_finds_the_genes(fake_flex, tmp_path):
+    overview = analysis.h5ad_overview(fake_flex)
+    assert overview["n_cells"] == 5 and overview["layers"] == ["X", "log1p_cp10k"]
+    assert overview["guesses"] == {"sample": S, "label": "leiden_atlas", "donor": "patient_id",
+                                   "condition": "role", "layer": "log1p_cp10k"}
+    assert overview["gene_column"] is None and overview["missing_genes"] == []
+    role = next(c for c in overview["columns"] if c["name"] == "role")
+    assert role["n_values"] == 2 and role["examples"] == ["healthy_control", "recipient"]
+    # gene symbols in a var column instead of the index
+    other = analysis.h5ad_overview(write_h5ad_with_gene_ids(tmp_path / "ids.h5ad"))
+    assert other["gene_column"] == "gene_symbols" and other["missing_genes"] == []
+    assert other["guesses"]["layer"] == "X"
+
+
+def test_h5ad_tables_with_a_gene_column_and_without_a_person(tmp_path):
+    path = write_h5ad_with_gene_ids(tmp_path / "ids.h5ad")
+    cells, sheet = analysis.h5ad_tables(path, S, "leiden_atlas", None, {"condition": "role"}, "X", "gene_symbols")
+    assert cells["PTPRC"].tolist() == pytest.approx(fake_flex_cells()["PTPRC"].tolist())
+    assert list(sheet.columns) == [S, analysis.METHOD_COLUMN, "condition"]      # no donor_id column
+    with pytest.raises(SystemExit, match="more than one value inside a sample"):
+        analysis.h5ad_tables(path, S, "leiden_atlas", None, {"condition": "leiden_atlas"}, "X", "gene_symbols")
+
+
+def test_add_h5ad_adds_the_samples_to_a_facs_only_sheet(fake_flex, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    pd.DataFrame({S: ["POOL"], "method": ["FACS"], "facs_name": ["pool.fcs"],
+                  "condition": ["Healthy pool"]}).to_csv(data / analysis.METADATA_FILE, index=False)
+    n = analysis.add_h5ad(data, fake_flex, S, "leiden_atlas", "patient_id",
+                          {"condition": "role", "timepoint": "timepoint"}, "log1p_cp10k")
+    assert n == 5
+    metadata = analysis.load_metadata(data / analysis.METADATA_FILE)
+    seq = analysis.samples_of(metadata, "scRNA-seq").set_index(S)
+    assert list(seq.index) == ["A", "B1", "B2"] and seq.loc["B2", "timepoint"] == "T07"
+    assert seq.loc["B1", analysis.DONOR_COLUMN] == "P2"

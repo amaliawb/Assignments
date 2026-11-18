@@ -32,8 +32,11 @@ For day04 I copied that program into this folder and added a web application bui
    Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
 3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
 4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
-5. Upload the sample sheet and the FlowJo export (the sample sheet says which method measured each sample). The scRNA-seq file is optional: leave it empty to use the default Flex data (see [Step 9](#step-9-the-real-flex-data-as-default)). A reference atlas and a single-cell imaging export are optional too. Or click **Use demo data** to try it with made-up data.
-6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
+5. Upload the sample sheet and the FlowJo export (the sample sheet says which method measured each sample). The scRNA-seq data is optional: a cells `.csv`, an `.h5ad` file (uploaded or as a path on this computer), or nothing for the default Flex data (see [Step 9](#step-9-the-real-flex-data-as-default) and [Step 10](#step-10-checking-the-labels-your-own-h5ad-and-honest-statistics)). A reference atlas and a single-cell imaging export are optional too. Or click **Use demo data** to try it with made-up data.
+6. On the setup page, choose the FACS panel, check which FACS population each scRNA-seq label is counted in, and choose the groups to compare. On the results page, read the **Read this first** box before the tables.
+7. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
+
+For what the program does with your files and what each option means, without the code, see [WHAT_THE_APP_DOES.md](WHAT_THE_APP_DOES.md).
 
 Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
 
@@ -67,12 +70,13 @@ What the address **http://127.0.0.1:5050** means:
 |---|---|
 | `facs_vs_scrnaseq.py` | The analysis program copied from day03, with one small refactor (see below). It still works from the terminal exactly as before. |
 | `app.py` | The Flask web application. It contains no analysis code of its own and calls functions from `facs_vs_scrnaseq.py`. |
+| `WHAT_THE_APP_DOES.md` | For users: what the program does with the files you give it, every option in the app, and how to read the results. No code. |
 | `HOW_THE_CODE_WORKS.md` | A plain-language explanation of the logic of the code, for readers who don't know much Python. |
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
-| `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
+| `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `h5ad.html` (choose the columns of an `.h5ad` file), `setup.html` (panel, label table, conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
-| `test_app.py` | 23 automatic tests covering both the terminal program and the web app. |
-| `test_business_logic.py` | 86 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
+| `test_app.py` | 31 automatic tests covering both the terminal program and the web app. |
+| `test_business_logic.py` | 97 unit tests of the calculations (proportions, statistics, atlas, imaging, `.h5ad` reading, label assignment), each on a tiny hand-made table with a known answer. |
 | `TESTS_README.md` | How the unit tests in `test_business_logic.py` were written and what each one checks. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
@@ -348,11 +352,54 @@ The website now uses the real Flex data when the scRNA-seq upload is left empty:
 | 3 `ascending_thick_LOH_kidney ?` | some EPCAM | EpCAM-high epithelium |
 | 0, 1, 2 `epithelium_prostate_urethra ?` | KRT13, S100A8; **no** EPCAM, MME or ANPEP | EpCAM-low (CD45 + EpCAM) / Other CD45⁻ (4-marker panel) |
 
-Clusters 0–2 look like squamous cells (KRT13), which are EpCAM-negative, so on FACS they would land in the CD45⁻ EpCAM-low gate. There is no proximal tubule cluster in the Flex data, so with the 4-marker panel the Flex "Proximal tubule" proportion is 0. Cluster numbers change if the notebook is re-clustered: then check the labels in `PANELS` again.
+Clusters 0–2 look like squamous cells (KRT13), which are EpCAM-negative, so on FACS they would land in the CD45⁻ EpCAM-low gate. There is no proximal tubule cluster in the Flex data, so with the 4-marker panel Flex can't measure the proximal tubule. Since Step 10 that population is left out of the method comparison instead of being compared as 0%. Cluster numbers change if the notebook is re-clustered: then check the labels again, on the setup page or in `PANELS`.
 
 **How it was checked:**
 - A full run with the real Flex data and the demo FACS files, with both panels: all 60,296 cells were assigned to a population, and the 12 samples were combined into 8 people.
 - 10 new tests (on a tiny made-up `.h5ad`): the right genes are read from the sparse matrix; a missing gene, layer or file gives a clear message; the cache is used when the drive is missing; the Flex samples are added only to a sheet without scRNA-seq rows; an uploaded file is never replaced; every Flex cluster is in exactly one population; and a full website run without a scRNA-seq upload.
+
+### Step 10: Checking the labels, your own .h5ad, and honest statistics
+
+Four additions that make the link between scRNA-seq clusters and FACS gates visible, and stop it from going wrong without anyone noticing. [WHAT_THE_APP_DOES.md](WHAT_THE_APP_DOES.md) describes them for users.
+
+**1. Label table on the setup page.** The app does not cluster: every cell already has a label from the notebook. The setup page now lists every label with:
+- its number of cells and samples;
+- the mean RNA level of PTPRC, EPCAM, MME and ANPEP, shaded per column so high and low stand out;
+- a menu with the FACS population it is counted in. The menu starts from `seq_labels` in SETTINGS. Labels that aren't in SETTINGS are tagged **new** and start as *Other* (left out).
+
+You can change any label for this run. Changed rows are highlighted, and the choices are saved per panel in `run.json` and shown again on the next run. Every run writes `A_label_assignment.csv`, which shows each label, its population, the SETTINGS population and whether it was changed. The results page shows this table in section A. On the command line, `--label-map my_labels.csv` does the same (columns `label,population`; an edited `A_label_assignment.csv` works).
+
+**2. .h5ad files.** The scRNA-seq upload now accepts an `.h5ad` file. You can also type the path of an `.h5ad` or `.csv` file on this computer, which is quicker than uploading a 4 GB file. A new page (`templates/h5ad.html`) then lists the file's `.obs` columns, with the number of values and a few examples of each. You choose:
+- **sample**, **cell type**, and optionally **person** and **groups** (copied into the sample sheet as `condition`);
+- extra sample columns to copy (e.g. `timepoint`);
+- the expression **layer**.
+
+Columns with common names (`sample_id`, `leiden_atlas`, `patient_id`, `role`, `log1p_cp10k`, ...) are pre-selected (`H5AD_COLUMN_GUESSES` in SETTINGS). The marker genes are found in the `.var` index or, for files indexed by Ensembl IDs, in a `.var` column of gene symbols. Only those columns and the four genes are read, using the same code as the default Flex data. An uploaded `.h5ad` is deleted once it has been read; a file given as a path is never touched. A column that differs between the cells of one sample (e.g. the cluster) can't be used as a person or group, and the page says so.
+
+**3. Populations scRNA-seq can't see.** Before this step, with no proximal tubule cluster in Flex, the app compared Flex "0% proximal tubule" with the FACS proximal tubule gate. That made it look like a large method difference, and every other Flex proportion came out a little too high. Now:
+- a population with no scRNA-seq cells is listed in the section A table as *not compared*, with no test;
+- sections A and E calculate the proportions of FACS, scRNA-seq **and** the atlas out of the populations both methods measure, so they share the same denominator. That table is saved as `A_proportions_compared_populations.csv`;
+- section B (conditions within one method) still includes the FACS proximal tubule;
+- plot colours stay the same per population.
+
+**4. Saying what the statistics can show.** Every test in sections A and E gets a `smallest_possible_p` column: the lowest p-value that test can give with these group sizes, whatever the data. Examples: 4 people against one pool gives 2/2⁴ = 0.125; 6 vs 6 people gives 2/C(12,6) = 0.002. A **Read this first** box at the top of the results page, also saved as `notes.txt` and printed in the terminal, warns about:
+- populations scRNA-seq can't see;
+- a FACS group that is a single sample (a pool): the comparison describes the difference, but it can't prove the methods differ, because the pool's own variation is unknown;
+- comparisons that can never be significant with these numbers;
+- comparisons with too few samples for any test.
+
+**How it was checked:**
+- Real Flex data with the demo FACS files: the label table shows the 13 clusters in numeric order with their marker means. With the 4-marker panel, *Proximal tubule* is flagged and left out, and the notes appear. Moving cluster 3 to *Other* left *EpCAM-high epithelium* without scRNA-seq cells, and it was flagged too.
+- 19 new tests (11 unit tests, 8 app tests), on the demo data and tiny made-up `.h5ad` files:
+  - the label summary, cluster order and label overrides;
+  - `smallest_possible_p` against the real scipy tests;
+  - re-dividing by the kept populations;
+  - the notes;
+  - the `.h5ad` column guesses and gene symbols in a `.var` column;
+  - a column that varies within a sample is refused;
+  - an upload and a path run end to end, a wrong path is reported, and the uploaded file is deleted;
+  - a changed label is used and remembered, and an unknown population is refused;
+  - a population without scRNA-seq cells is left out and the proportions still add up to 1.
 
 ---
 
@@ -374,6 +421,7 @@ python facs_vs_scrnaseq.py --demo                    # made-up demo data
 python facs_vs_scrnaseq.py                           # real data from day04/data/
 python facs_vs_scrnaseq.py --condition-column condition --seq-conditions Healthy Disease --facs-conditions "Healthy pool" Disease
 python facs_vs_scrnaseq.py --panel CD45_EpCAM       # FACS stained with CD45 + EpCAM only
+python facs_vs_scrnaseq.py --label-map my_labels.csv # count some scRNA-seq labels in other populations
 ```
 
 **Tests:**
@@ -405,7 +453,7 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
    POOL1,FACS,healthy_pool.fcs,,Healthy pool
    ```
 2. **FlowJo export `.xlsx`:** one row per FACS sample, with the gates of the chosen panel, with the count of each population gate and the median of each marker and imaging feature in each population.
-3. **`scrnaseq_cells.csv` (optional on the website):** without it, the default Flex data is used (see Step 9). Otherwise: one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy.
+3. **`scrnaseq_cells.csv` (optional on the website):** without it, the default Flex data is used (see Step 9). Otherwise: one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy. On the website you can give the `.h5ad` file itself instead, and choose its columns on the next page (see Step 10).
 4. **`reference_atlas.csv` (optional, new in day04):** a reference single-cell atlas of urine. Either:
    - one row per cell, with `cell_type`, an optional `donor_id` and optional `PTPRC, MME, ANPEP, EPCAM` columns;
    - or one row per cell type (× donor), with `cell_type`, an optional `donor_id` and `n_cells`.
@@ -421,7 +469,9 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
 - **Comparing with an atlas:** an atlas is made with other protocols and is usually from healthy people. Small differences from it are expected, and differences in a disease condition can be biology rather than an error. The marker heatmap (E3) only compares patterns (which population is high or low), not absolute levels.
 - **Imaging and outliers:** the S8 imaging features describe morphology, not physiology. An outlier is a reason to look at the images of that sample or those cells, not an automatic reason to exclude them. With few samples, the imaging vs marker correlations (F5) are uncertain, so only strong, significant ones should be trusted.
 - **Local use only:** the web app is meant to run on my own computer. It has no login, and runs are kept in `runs/` until I delete them.
-- **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition. Against a single FACS pool, at least 6 scRNA-seq samples are needed before p < 0.05 is even possible.
+- **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition. Against a single FACS pool, at least 6 scRNA-seq people are needed before p < 0.05 is even possible. The `smallest_possible_p` column and the **Read this first** box say this for every comparison (Step 10).
+- **Labels, not clusters:** the app never re-clusters the scRNA-seq data. It can't split a mixed cluster, e.g. neutrophils and macrophages in one cluster, or find a cell type the notebook didn't label. A FACS population with no scRNA-seq label is left out of the method comparison rather than compared as 0%.
+- **`.h5ad` given as a path:** the app reads any path you type, which is fine on your own computer. It is one more reason never to put this app on a shared server as it is.
 - **Different samples per method:** a difference between FACS and scRNA-seq can come from the method or from the different people measured (see Step 7).
 - **Placeholder gates and labels:** the SSC-high/low and EpCAM-high/low gate names are placeholders: copy the real names from FlowJo into `PANELS` in SETTINGS. The Flex cluster labels are real (Step 9), but they were assigned to gates from marker genes, not from sorted cells.
 - **Default Flex data:** the terminal program does not use it; there, put `scrnaseq_cells.csv` in `day04/data/` (the cached `day04/default_flex/flex_cells.csv` can be copied).

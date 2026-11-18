@@ -158,10 +158,19 @@ cells["population"] = cells[CELL_TYPE_COLUMN].map(label_to_population).fillna("O
 
 In words: "look up each cell's label in the dictionary and write the population in a new column; if a label isn't in the dictionary, call it 'Other'". The program prints which labels ended up as "Other", so you notice if you forgot one in SETTINGS.
 
-**The default Flex data.** When no scRNA-seq file is given on the website, three functions make one from the real Flex data (`DEFAULT_FLEX_H5AD` in SETTINGS):
-- **`read_h5ad_cells(...)`** opens the `.h5ad` file (4 GB) with `h5py` and reads only what is needed: a few per-cell columns (sample, cluster label, person, conditions) and the four marker genes. The expression is stored as a *sparse* matrix: for each cell, only the genes that are not zero, as a list of gene numbers (`indices`) and values (`data`), with `indptr` saying where each cell's part starts. The function goes through 5000 cells at a time and keeps only the values of the four genes.
-- **`default_flex_tables()`** turns that into the cells table (`sample_id`, `cell_type`, PTPRC, MME, ANPEP, EPCAM) and one sample-sheet row per sample (`donor_id` = the patient, `condition` = healthy_control / donor / recipient, `timepoint`). Both are saved in `day04/default_flex/`, so the slow reading happens only once. The cache is rebuilt when the `.h5ad` is newer, and used alone when the drive is not connected.
-- **`add_default_flex(data_dir)`** puts those cells in the run's data folder and adds the Flex samples to the sample sheet, unless the sheet already lists scRNA-seq samples. It does nothing if a scRNA-seq file was uploaded.
+The dictionary comes from **`settings_label_map(panel)`** (the `seq_labels` of one panel). `load_seq` can also get a **`label_map`**: a small dictionary such as `{"5: myeloid": "Neutrophils"}` that replaces SETTINGS for those labels. It is filled in on the setup page of the website, or from a CSV with `--label-map` in the terminal. A population name that isn't in the panel stops the program with a message.
+
+**`seq_label_summary(path)`** makes the label table of the setup page. For every label it gives the number of cells and samples, the average of each marker gene in those cells, and the population each panel's SETTINGS give it. Labels are sorted by cluster number (`label_sort_key`), so "2: ..." comes before "10: ...". The program never clusters cells itself: the labels always come from the notebook.
+
+**Reading `.h5ad` files.** Some functions read an `.h5ad` file (the format scanpy saves) without loading it whole:
+- **`read_h5ad_cells(...)`** opens the file with `h5py` and reads only what is needed: a few per-cell columns (sample, cluster label, person, conditions) and the four marker genes. The expression is stored as a *sparse* matrix: for each cell, only the genes that are not zero, as a list of gene numbers (`indices`) and values (`data`), with `indptr` saying where each cell's part starts. The function goes through 5000 cells at a time and keeps only the values of the four genes. The genes are looked up in the gene index, or in a `.var` column of gene symbols when the index holds Ensembl IDs.
+- **`h5ad_tables(...)`** turns that into the cells table (`sample_id`, `cell_type`, PTPRC, MME, ANPEP, EPCAM) and one sample-sheet row per sample (`donor_id`, and group columns such as `condition` and `timepoint`). A person or group column must have one value per sample. If it changes between the cells of a sample, like a cluster column, the program stops with a message.
+- **`h5ad_overview(path)`** reads only the column names, layers and gene names, for the website's ".h5ad columns" page: every `.obs` column with its number of values and a few examples, the layers, where the marker genes are, and a guess for each choice (`H5AD_COLUMN_GUESSES` in SETTINGS).
+- **`add_seq_tables(...)`** puts the cells in the run's data folder and adds the samples to the sample sheet, unless the sheet already lists scRNA-seq samples.
+
+They are used in two ways:
+- **The default Flex data.** When no scRNA-seq data is given on the website, **`add_default_flex(data_dir)`** uses **`default_flex_tables()`**: `h5ad_tables` on `DEFAULT_FLEX_H5AD`, with `donor_id` = the patient, `condition` = healthy_control / donor / recipient, and `timepoint`. The result is saved in `day04/default_flex/`, so the slow reading happens only once. The cache is rebuilt when the `.h5ad` is newer, and used alone when the drive is not connected.
+- **Your own `.h5ad`.** **`add_h5ad(...)`** does the same with the columns you chose on the website.
 
 The Flex labels (`leiden_atlas`, e.g. `6: myeloid`) are listed in `PANELS` under the gate each cluster would fall into on FACS, chosen from the cluster's marker genes (see the comment above `IMMUNE_POPULATIONS`).
 
@@ -185,6 +194,8 @@ The result looks like this:
 | ... | ... | ... | ... | ... | ... |
 
 Why proportions and not cell numbers? FACS counts tens of thousands of cells and scRNA-seq a few thousand, so the raw numbers can't be compared. Proportions can.
+
+**Populations scRNA-seq can't see.** **`populations_without_seq_cells(cells)`** lists the populations that no scRNA-seq cell was counted in, e.g. the proximal tubule when the Flex data has no proximal tubule cluster. For scRNA-seq that population isn't measured, so its 0% isn't a real 0. For the method comparison (sections A and E), **`keep_populations(...)`** removes such a population and divides every count again by the sum of the **remaining** populations, for FACS, scRNA-seq and the atlas alike, so all of them share the same denominator. **`only_populations([...])`** is a `with` block: inside it, `POPULATIONS` holds only the populations both methods measure, so every function and plot of sections A and E leaves the others out. When the block ends, everything is back. Section B (conditions within one method) keeps all populations.
 
 **`combine_proportions_per_donor(...)`**: samples of the **same person are combined** into one. The sample sheet's optional `donor_id` column says which person each sample comes from (e.g. 12 Flex samples from 8 people). Samples of one person are not independent, so the cells of all their samples are added up and divided again. From here on, every statistic counts each person once. The per-sample proportions are still saved, in `A_proportions_per_sample.csv`. Without a `donor_id`, every sample is its own person and nothing changes.
 
@@ -212,6 +223,8 @@ Small helper functions do the actual tests:
   - one side is a single value (e.g. ONE pooled FACS sample) → **one-sample Wilcoxon**: are the other side's samples centred on that value?
   - every value identical → no test.
 - **`bootstrap_median_difference(...)`**: a 95% interval for "median of group 1 − median of group 2". Both groups are resampled 2,000 times, and the middle 95% of the differences is kept. A single pool stays fixed.
+- **`smallest_possible_p(n1, n2)`**: the lowest p-value `compare_to_reference` can give with these group sizes, whatever the data: 2 / C(n1+n2, n1) for Mann-Whitney U, and 2 / 2ⁿ for the one-sample Wilcoxon test. Example: 4 people against one pool can never get below 0.125. It is a column in the section A and E tables.
+- **`interpretation_notes(...)`** writes the warnings in plain language. They are printed, saved as `notes.txt`, and shown in the **Read this first** box of the results page. They cover a population scRNA-seq can't see, a FACS group of one sample (a pool, so the comparison is descriptive), comparisons that can never be significant, and comparisons with too few samples for a test.
 - **`fdr_correct(...)`**: **Benjamini-Hochberg** correction. When you run many tests, some come out "significant" by luck. This turns each p-value into a q-value that accounts for the number of tests. The program uses q < 0.05 to call something significant.
 
 These helpers are then used for the four questions of the analysis:
@@ -230,7 +243,9 @@ Writing the tests once as helpers and reusing them means every section is tested
 
 ### Step 4: Saving the tables
 
-Every table is saved as a `.csv` file (opens in Excel). The name starts with its section letter, e.g. `A_method_comparison_stats.csv`. The website uses that letter to put each file in the right section.
+Every table is saved as a `.csv` file (opens in Excel). The name starts with its section letter, e.g. `A_method_comparison_stats.csv`. The website uses that letter to put each file in the right section. Two files help you check the run itself:
+- `A_label_assignment.csv`, from `label_assignment_table(...)`, gives the population each scRNA-seq label was counted in and whether you changed it;
+- `notes.txt` holds the warnings.
 
 ### Step 5: Plots
 
@@ -330,7 +345,7 @@ An outlier is a reason to **look** at that sample or those cells, not an automat
 **`run_analysis(...)`** is the conductor. It calls steps 1 to 5 in order, then section E if an atlas file is there, then section F if imaging features are set, and returns the summary tables. It is the **one function both the terminal and the website use**.
 
 **`main()`** is only for the terminal. It:
-1. reads the options you typed (`--demo`, `--panel`, `--condition-column`, `--seq-conditions`, `--facs-conditions`)
+1. reads the options you typed (`--demo`, `--panel`, `--condition-column`, `--seq-conditions`, `--facs-conditions`, `--label-map`)
 2. makes demo data if you asked for it
 3. calls `run_analysis(...)`
 4. prints a short summary
@@ -356,10 +371,12 @@ The website is built with **Flask**. Each page is a Python function. A line like
  Browser                          app.py                            facs_vs_scrnaseq.py
  ───────                          ──────                            ───────────────────
  open  /                 ──►  index()     shows upload page
- upload files / demo     ──►  upload()    saves files in runs/<id>/data ──► add_default_flex (if no scRNA-seq file)
+ upload files / demo     ──►  upload()    saves files in runs/<id>/data ──► add_default_flex (if no scRNA-seq data)
                                                                             load_metadata (check)
- open  /run/<id>         ──►  setup()     shows condition checkboxes (scRNA-seq and FACS)
- click "Run analysis"    ──►  analyse()   ─────────────────────────────────► run_analysis(...)
+ (.h5ad only) /run/<id>/h5ad ──► h5ad_columns()  choose its columns ────────► h5ad_overview, then add_h5ad
+ open  /run/<id>         ──►  setup()     panel, label table, condition ───► seq_label_summary
+                                          checkboxes (scRNA-seq and FACS)
+ click "Run analysis"    ──►  analyse()   ─────────────────────────────────► run_analysis(..., label_map)
  open  /run/<id>/results ──►  results()   reads the saved tables + plots,
                                           adds texts from explanations.py
  click a plot / zip      ──►  result_file() / download_all()
@@ -368,6 +385,9 @@ The website is built with **Flask**. Each page is a Python function. A line like
 ### Important ideas in `app.py`
 
 - **The default Flex data.** The scRNA-seq field may be left empty. `upload()` then calls `add_default_flex(...)`, which copies the real Flex cells into the run folder and adds the Flex samples to the sample sheet. A small file `seq_source.txt` in the run folder remembers where the scRNA-seq data came from; the setup and results pages show it. If the Flex file can't be found (e.g. the X: drive is not connected and there is no cache), the upload page shows that message.
+- **`.h5ad` files.** The scRNA-seq field also takes an `.h5ad` file, and a text field takes the path of an `.h5ad` or `.csv` file on this computer, which is quicker than uploading a big file. For an `.h5ad`, `upload()` sends you to the page `h5ad_columns()`, which shows the file's columns (from `h5ad_overview`) with a guess for each choice. After you choose, it calls `add_h5ad(...)`. An uploaded `.h5ad` is then deleted: only the small cells table stays in the run folder. A file given as a path is only read. Until the columns are chosen, `pending_h5ad(...)` sends the setup page back to this page.
+- **The label table.** `setup()` calls `seq_label_summary(...)`, and `label_rows(...)` turns it into the table of the setup page: every label with its cells, its marker genes (shaded relative to the highest label) and one menu per panel. Only the menus of the selected panel are switched on, so only those are sent. `chosen_label_map(...)` reads the menus back into a `label_map` for `run_analysis`. The choices are saved per panel in `run.json` (`label_maps`) and shown again next time.
+- **The results page** shows the notes in a **Read this first** box, the number of changed labels, and the label table in section A.
 - **Optional uploads.** The atlas and the single-cell imaging fields may be left empty. `upload()` then skips them, and `run_analysis()` simply doesn't find those files. The results page then shows a short note: "no reference atlas was given" in section E, or that the cell-level plots F6–F8 need the per-cell export in section F.
 - **The FACS panel.** The setup page asks which antibodies were used (radio buttons). The choice is passed to `run_analysis(...)` and saved in `run.json`, so it stays selected when you re-run.
 - **The condition column.** The "condition column" is the sample-sheet column that says which group each sample belongs to (e.g. `condition`: healthy_control / recipient for Flex, Healthy pool / Disease for FACS). `condition_candidates(...)` offers every column except the ID, method and person columns, columns named like a barcode, file or ID (`NOT_CONDITION_WORDS` in SETTINGS, so `flex_probe_barcode` is left out), and empty columns. For each column the setup page shows a short explanation (`CONDITION_COLUMN_HELP`) and its values for each method. A column that has values for only one method is shown greyed out, because there would be nothing to compare.
@@ -380,7 +400,8 @@ The website is built with **Flask**. Each page is a Python function. A line like
   - The server only accepts connections from this computer (`127.0.0.1`).
   - Run IDs must look exactly like a random ID.
   - Files are only served from inside a run's results folder.
-  - Uploads are limited to 500 MB.
+  - Uploads are limited to 20 GB (an `.h5ad` file can be several GB).
+  - The path field reads any file you type the path of. That is fine on your own computer, and one more reason the app must not run on a shared server as it is.
 
 ### The explanations on the results page
 
@@ -392,7 +413,7 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 The tests are small programs that use the code and check the answers, like controls in an experiment. Run them with `python -m pytest test_app.py -v`. They check, among other things, that:
 
-- a full demo analysis writes all 40 result files (19 for sections A–D, 7 for the atlas in section E, 14 for imaging in section F), with either FACS panel;
+- a full demo analysis writes all 42 result files (21 for sections A–D including the label table and `notes.txt`, 7 for the atlas in section E, 14 for imaging in section F), with either FACS panel;
 - the 12 Flex samples of the demo are combined into 8 people before the statistics;
 - every scRNA-seq group is compared with every FACS group, and a single FACS pool is tested with the one-sample Wilcoxon test;
 - an older sample sheet without a `method` column still works;
@@ -407,6 +428,9 @@ The tests are small programs that use the code and check the answers, like contr
 - the FACS panel chosen on the website is used for the analysis, shown on the results page, and stays selected when you re-run;
 - the setup page explains the condition column, leaves out barcode columns, and refuses a column that only one method has values in;
 - an upload without a scRNA-seq file uses the default Flex data (here a tiny made-up `.h5ad`), and a missing Flex file gives a clear message;
+- an `.h5ad` file, uploaded or given as a path, goes through the column page with the right guesses, and the run works. A column that varies inside a sample is refused, a wrong path is reported, and an uploaded file is deleted afterwards;
+- the setup page lists every scRNA-seq label with its marker genes and population. A changed label is used, saved in `A_label_assignment.csv`, and shown again next time. An unknown population is refused;
+- a population without scRNA-seq cells is left out of sections A and E (the proportions still add up to 1), and the notes say so. The notes also say when a comparison can never be significant (4 people vs one pool: 0.125);
 - every section and plot on the results page has its explanation;
 - wrong inputs (missing file, wrong file type, wrong gate name) give a clear message instead of a crash;
 - made-up or unsafe addresses give "404 not found".

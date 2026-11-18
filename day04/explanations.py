@@ -85,6 +85,17 @@ SECTION_HELP = {
             "With the CD45 + EpCAM panel, the EpCAM-low gate holds the proximal tubule cells AND any "
             "other EpCAM-negative CD45- cells (e.g. podocytes, fibroblasts); the Flex labels of those "
             "cell types are counted in the same population so both methods count the same cells.",
+            "Each scRNA-seq cell is counted in a FACS population through its cell-type label (the "
+            "table 'Which population each scRNA-seq label was counted in' below). The labels come "
+            "from your notebook; the app does not cluster. You can change the population of each "
+            "label on the setup page.",
+            "A population that no scRNA-seq label belongs to (e.g. no proximal tubule cluster) is "
+            "not measured by scRNA-seq. It is then left out of this section and of section E, and "
+            "the proportions of BOTH methods are calculated out of the populations both measure - "
+            "otherwise scRNA-seq would show 0% there and every other population a bit too high.",
+            "smallest_possible_p: the lowest p-value the test can give with these group sizes, "
+            "whatever the data. Above 0.05 means that comparison can never be significant; read "
+            "the size of the difference instead.",
         ],
     },
     "B": {
@@ -152,6 +163,8 @@ SECTION_HELP = {
             "technical bias of that method (e.g. a cell type that sorts or sequences less well).",
             "Atlases are made with other protocols (sample handling, chemistry, annotation), so "
             "small differences are expected. Look for large, consistent ones.",
+            "Like section A, this section leaves out any population scRNA-seq has no cells in, and "
+            "calculates the proportions of FACS, scRNA-seq AND the atlas out of the remaining populations.",
         ],
     },
     "F": {
@@ -202,7 +215,11 @@ COLUMN_HELP = {
     "seq_to_facs_ratio": "median_seq divided by median_facs. 2 = twice as much in scRNA-seq, 0.5 = half.",
     "test": "Mann-Whitney U (two groups of samples), Kruskal-Wallis (three or more groups at once) or "
             "one-sample Wilcoxon (a group of samples against a single value, e.g. a pool). "
-            "Empty = too few samples for a test.",
+            "Empty = too few samples for a test. 'not compared' = scRNA-seq has no cells in this "
+            "population (no label is assigned to it), so the methods cannot be compared there.",
+    "smallest_possible_p": "The lowest p-value this test can reach with these numbers of samples, whatever "
+                           "the data (e.g. 4 people against one pool: 0.125). Above 0.05 = this comparison "
+                           "can never be significant; look at the difference instead.",
     "p_value": "Uncorrected p-value.",
     "q_value_fdr": "p-value corrected for all tests in this table. Use this one.",
     "significant": "True if q_value_fdr is below 0.05.",

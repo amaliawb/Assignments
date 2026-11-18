@@ -16,6 +16,45 @@
     <p class="muted">The panel decides the gating and which Flex cell types each FACS population is compared with.
        The start page lists the gates and labels of each panel.</p>
 
+    <h3>Which FACS population is each scRNA-seq cell type?</h3>
+    <p class="muted">The app does not cluster the scRNA-seq data: every cell already has a cell-type label from your
+       notebook. Here you see each label with its number of cells and the average RNA level of the four marker genes
+       (darker = higher; compare down a column). Each label is counted in the FACS population whose gate those cells
+       would fall into. The choice starts from the settings; change it where the marker genes disagree
+       (e.g. a "myeloid" cluster with high PTPRC but no neutrophil markers). <i>Other</i> leaves the label out.
+       Changed rows are highlighted. Your choices are kept for this run.</p>
+    {% if label_error %}<pre class="alert">{{ label_error }}</pre>{% endif %}
+    {% if labels %}
+    <div class="table-wrap">
+    <table class="data labels">
+      <tr><th>scRNA-seq label</th><th>Cells</th><th>Samples</th>
+        {% for marker, gene in genes %}<th><i>{{ gene }}</i><br><span class="muted">{{ marker }}</span></th>{% endfor %}
+        <th>Counted as FACS population</th></tr>
+      {% for row in labels %}
+      <tr>
+        <td>{{ row.label }}{% if not row.in_settings %} <span class="tag" title="This label is not in the seq_labels of the settings">new</span>{% endif %}</td>
+        <td>{{ "{:,}".format(row.n_cells) }}</td><td>{{ row.n_samples }}</td>
+        {% for value, shade in row.genes %}
+        <td class="gene" style="background: rgba(194, 71, 122, {{ '%.2f' | format(shade * 0.5) }})">{{ '%.2f' | format(value) }}</td>
+        {% endfor %}
+        <td>
+          {% for key, choice in row.choices.items() %}
+          <select name="label_{{ row.index }}" data-panel="{{ key }}" data-default="{{ choice.default }}"
+                  {% if key != current_panel %}disabled hidden{% endif %}>
+            {% for option in choice.options %}
+            <option value="{{ option }}" {% if option == choice.chosen %}selected{% endif %}>{{ option }}{% if option == choice.default %} (settings){% endif %}</option>
+            {% endfor %}
+          </select>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    </div>
+    <p class="muted">A FACS population that no label is assigned to cannot be measured by scRNA-seq: the analysis then
+       leaves it out of the method comparison (sections A and E) instead of comparing it as 0%.</p>
+    {% endif %}
+
     <h3>Which column holds the groups? <span class="muted">(the "condition column")</span></h3>
     <p class="muted">Every column of your sample sheet that can split the samples into groups is listed here
        (ID, barcode and file columns are left out). Pick the one whose groups you want to compare.</p>
@@ -69,5 +108,29 @@
       });
     });
   });
+
+  // Label table: show the population choices of the selected panel only (the
+  // other panels' menus are disabled, so they are not sent), and highlight rows
+  // whose choice differs from the settings.
+  function markChanged() {
+    document.querySelectorAll('table.labels tr').forEach(function (row) {
+      var select = row.querySelector('select:not([disabled])');
+      row.classList.toggle('changed', !!select && select.value !== select.dataset.default);
+    });
+  }
+  document.querySelectorAll('input[name="panel"]').forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      document.querySelectorAll('table.labels select').forEach(function (select) {
+        var active = select.dataset.panel === radio.value;
+        select.disabled = !active;
+        select.hidden = !active;
+      });
+      markChanged();
+    });
+  });
+  document.querySelectorAll('table.labels select').forEach(function (select) {
+    select.addEventListener('change', markChanged);
+  });
+  markChanged();
 </script>
 {% endblock %}
