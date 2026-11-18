@@ -1,11 +1,19 @@
 # Day 04: a web interface for the FACS vs scRNA-seq program
 
-In [day03](../day03) I built a command-line program, `facs_vs_scrnaseq.py`. It compares urine cell populations measured on the same samples in two ways:
+In [day03](../day03) I built a command-line program, `facs_vs_scrnaseq.py`. It compares urine cell populations measured in two ways:
 
 - **BD FACSDiscover S8 sorting**, gated in FlowJo
 - **10x Flex single-cell RNA-seq**
 
-The populations are immune cells (CD45⁺), proximal tubule cells (CD45⁻ CD10⁺ CD13⁺), epithelial cells (CD45⁻ NOT CD10⁺CD13⁺, EpCAM⁺) and other CD45⁻ cells (CD45⁻ NOT CD10⁺CD13⁺, EpCAM⁻). The FACS gating is Cells → Single Cells → Live (Fixable Yellow⁻) → CD45⁺ / CD45⁻; CD45⁻ → CD10⁺CD13⁺ / NOT CD10⁺CD13⁺; NOT CD10⁺CD13⁺ → EpCAM⁺ / EpCAM⁻. CD10/CD13 is gated before EpCAM because proximal tubule cells can express EpCAM: with EpCAM⁺ and CD10⁺CD13⁺ side by side under CD45⁻, double-positive cells would be counted twice. With these gates every live cell is in exactly one population, so the proportions add up to 100%.
+The two methods **don't have to measure the same samples** (see [Step 7](#step-7-facs-and-scrna-seq-on-different-samples)). For example, the scRNA-seq results of a group of patients can be compared with FACS of a **pool of healthy urine** from several people, or with FACS of **other patients**.
+
+You choose which antibodies were used on FACS (see [Step 8](#step-8-facs-panels-people-and-the-pool)). The **CD45 + EpCAM** panel and the **CD45 + EpCAM + CD10 + CD13** panel both use Fixable Yellow for live/dead. The gating is:
+
+- **Both panels:** Cells → Single Cells → Live (Fixable Yellow⁻). CD45⁺ cells are immune cells: SSC-high = **neutrophils**, SSC-low = **other immune**.
+- **CD45 + EpCAM:** CD45⁻ EpCAM-high = **distal tubule, collecting duct and urothelium**. CD45⁻ EpCAM-low = **proximal tubule** (the same cells as CD10⁺CD13⁺, plus other EpCAM-negative CD45⁻ cells).
+- **CD45 + EpCAM + CD10 + CD13:** CD45⁻ CD10⁺CD13⁺ = **proximal tubule**; the rest splits into EpCAM-high (distal tubule, collecting duct, urothelium) and EpCAM-low (**other CD45⁻**).
+
+CD10/CD13 is gated before EpCAM because proximal tubule cells can carry some EpCAM: double-positive cells would otherwise be counted twice. In both panels every live cell is in exactly one population, so the proportions add up to 100%. The diagram below shows the original day03 gating.
 <img width="609" height="145" alt="image" src="https://github.com/user-attachments/assets/198757aa-7b32-4ba2-88fd-b27c083d29bf" />
 
 
@@ -24,7 +32,7 @@ For day04 I copied that program into this folder and added a web application bui
    Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
 3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
 4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
-5. Upload your three files (plus, optionally, a reference atlas and a single-cell imaging export), or click **Use demo data** to try it with made-up data.
+5. Upload your three files (the sample sheet says which method measured each sample; plus, optionally, a reference atlas and a single-cell imaging export), or click **Use demo data** to try it with made-up data.
 6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
 
 Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
@@ -63,8 +71,8 @@ What the address **http://127.0.0.1:5050** means:
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
-| `test_app.py` | 17 automatic tests covering both the terminal program and the web app. |
-| `test_business_logic.py` | 46 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
+| `test_app.py` | 20 automatic tests covering both the terminal program and the web app. |
+| `test_business_logic.py` | 77 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
 | `TESTS_README.md` | How the unit tests in `test_business_logic.py` were written and what each one checks. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
@@ -78,7 +86,7 @@ Claude copied `day03/facs_vs_scrnaseq.py` into `day04/` and read through it to f
 
 - **Loading:** `load_metadata`, `load_facs`, `load_seq`
 - **Building tables:** `build_proportions`, `build_protein_vs_rna`, `build_imaging`
-- **Statistics:** `method_agreement_stats`, `condition_stats`, `protein_rna_stats`, `imaging_between_populations`
+- **Statistics:** `method_agreement_stats` (replaced by `method_comparison_stats` in Step 7), `condition_stats`, `protein_rna_stats`, `imaging_between_populations`
 - **Plots:** the `plot_*` functions
 
 This is the business logic. Only `main()` mixed two jobs: it read the terminal options and asked questions with `input()`, and it also ran all the analysis steps.
@@ -102,7 +110,7 @@ The web app is a thin layer over the analysis script. It does `import facs_vs_sc
    - The page also shows the current SETTINGS from the script (populations, gate paths, markers and channels, imaging features), so you can see what the program expects.
 2. **Setup page (`/run/<id>`):** this replaces typing numbers in the terminal.
    - Pick the condition column with radio buttons.
-   - Tick the conditions you want; each one shows how many samples it has.
+   - Tick the conditions you want; each one shows how many samples it has. (Since Step 7 there are two sets of checkboxes: one for the scRNA-seq samples and one for the FACS samples.)
    - Ticking nothing includes everything, like pressing Enter in the terminal version.
 3. **Results page (`/run/<id>/results`):** one section per analysis (A proportions, B conditions, C protein vs RNA, D imaging, E reference atlas when an atlas was given, F imaging profiles per cell type). Each section has:
    - a summary table
@@ -216,6 +224,108 @@ Next I asked for everything the S8 imaging can tell about each cell type: mean m
   - `robust_z` flags an injected outlier but not the normal values, and doesn't crash when all values are equal;
   - with no imaging features set, sections D and F are skipped and the rest still runs.
 
+### Step 7: FACS and scRNA-seq on different samples
+
+Until now the program assumed that **every sample was measured by both methods**. Section A then paired each sample's FACS result with its own scRNA-seq result (correlation, Bland-Altman, paired Wilcoxon test). In practice the two methods are run on **different samples**. The scRNA-seq results of a group of people are compared with FACS of either:
+
+- a **pool of healthy urine** from several people. This is ONE FACS sample.
+- **several patient samples** measured by FACS, from other people than the scRNA-seq ones.
+
+The program was changed so the two methods are compared as **groups of samples**, never sample by sample.
+
+**What changed for the user:**
+- **Sample sheet:** a new `method` column (`FACS` or `scRNA-seq`) says which method measured each sample. Only FACS samples need a `facs_name`. A pool is simply one FACS row. Ways of writing the method like `facs`, `Flex` or `seq` are understood. An older sheet without a `method` column still works: every sample is then taken to be measured by both methods.
+- **Choosing conditions:** you choose the conditions separately for the scRNA-seq samples and for the FACS samples. In the terminal: `--seq-conditions Disease --facs-conditions "Healthy pool" Disease`. On the website there are two sets of checkboxes. **Every chosen scRNA-seq condition is compared with every chosen FACS condition**, for example "Disease (scRNA-seq) vs Healthy pool (FACS)" and "Disease (scRNA-seq) vs Disease (FACS)" in one run.
+
+**What changed in the analysis:**
+
+| Section | Before (same samples) | Now (different samples) |
+|---|---|---|
+| A | Paired: correlation, Bland-Altman, paired Wilcoxon | Unpaired, per population and per pair of groups: the medians, the difference (scRNA-seq − FACS) with a bootstrap 95% interval, and the ratio. Two groups of ≥ 3 samples → **Mann-Whitney U**. One side is a single sample (a pool) → **one-sample Wilcoxon** of the other side against that value. FDR-corrected. |
+| B | Conditions within each method | Unchanged. A single pool can't be tested here (it's 1 sample). |
+| C | Protein vs RNA per sample | **Per population**: the typical protein level (median over the FACS samples) vs the typical RNA level (median over the scRNA-seq samples). Spearman per marker across the populations, plus one "All markers (scaled)" test over all population × marker points. |
+| D, F | All samples | The FACS samples and FACS conditions only (only FACS has images). |
+| E | Per method and condition | The same, with each method's own conditions. A single FACS pool is tested by comparing the atlas donors with the pool's value. |
+
+New or renamed outputs: `A2_proportions_by_method.png` (box per group), `A3_method_difference.png` (difference per population with its interval), `A_method_comparison_stats.csv`, `C_protein_per_sample.csv` and `C_rna_per_sample.csv`. These were removed: `A2_proportions_FACS_vs_seq.png`, `A3_bland_altman.png` and `A_method_agreement_stats.csv`.
+
+**The demo data** now has different people per method: scRNA-seq of 10 people (5 Healthy, 5 Disease), and FACS of a healthy pool plus 6 other Disease patients. scRNA-seq is made to capture fewer epithelial cells, so section A has a method effect to find.
+
+**Two statistical fixes found along the way:**
+- **Exact Spearman p-values for few points.** scipy's p-value for a Spearman correlation is an approximation that is far too small for few points. For 4 points in perfect order it gives p = 0, while the smallest possible p is 2/24 = 0.083. For up to 8 points the program now calculates the exact p-value by trying every possible ordering. This matters for section C (4 populations) and for small groups everywhere.
+- **No test when every value is identical.** If every value is identical (for example a population that is 0 in all samples), no test is reported, instead of a "test" with an empty p-value.
+
+**Speed improvements** (the results stay the same):
+- Only the needed columns are read from the scRNA-seq file, the atlas and the per-cell imaging export. Exports with many extra columns load faster and use less memory.
+- The violin plots (F6) estimate their shape from at most 5,000 random cells per population (`MAX_CELLS_PER_VIOLIN`). The median line still uses all cells. With 437,000 cells this plot took 6.6 s; it now takes about 1 s, however many cells there are.
+- Several tables are now built and summarised all at once instead of row by row, using pandas `melt` and `groupby`. This applies to the proportions, the marker tables, the per-cell summary and the imaging-marker correlations. All box plots of a panel are drawn in one call.
+- Most of the remaining run time (~16 s for the demo) is matplotlib drawing the 17 figures. The statistics take under a second.
+
+**Important for interpreting the results:**
+- **A single pool has little statistical power.** 5 scRNA-seq samples tested against one pool can never reach p < 0.05: the smallest possible p is 2/32 = 0.0625. You need at least 6 samples, and more after FDR correction. With a pool, look mainly at the size of the difference and its interval.
+- **Measuring the same pool again is not new samples.** Repeated FACS measurements of the same pool are not independent samples. Listing them as separate rows would make the tests too optimistic.
+- **Method effect or biology?** With different people per method, a difference can be either. Comparing biologically similar groups (e.g. Healthy scRNA-seq vs a Healthy FACS pool) is the fairest test of the methods themselves. The reference atlas (section E) gives both methods a shared yardstick.
+
+**How it was checked:**
+- All 82 tests pass (64 unit tests, 18 app tests). The new tests check:
+  - the `method` column and the old sheet format;
+  - choosing conditions per method;
+  - proportions for different samples per method;
+  - the unpaired tests, with exact p-values worked out by hand (e.g. 2/32 for 5 samples against one pool);
+  - the bootstrap interval;
+  - the exact Spearman p-value;
+  - the per-population protein vs RNA comparison;
+  - the atlas test for a single pool;
+  - an end-to-end run with an old-style sample sheet.
+- The exact Spearman p-value was checked against scipy's own permutation test (identical results).
+- The new plots were rendered and checked by eye.
+
+### Step 8: FACS panels, people and the pool
+
+Three more changes, from how the real experiment is set up.
+
+**1. Choosing the FACS panel.** The antibodies used on FACS can be CD45 + EpCAM, or CD45 + EpCAM + CD10 + CD13. Both panels always use Fixable Yellow. The new setting `FACS_PANEL` in SETTINGS holds the default. It can be changed per run with `--panel CD45_EpCAM` in the terminal, or with a choice on the website's setup page. The panel decides:
+
+- **the gating, and so which populations exist:**
+
+  | Population | CD45 + EpCAM | CD45 + EpCAM + CD10 + CD13 |
+  |---|---|---|
+  | Neutrophils | CD45⁺ SSC-high | CD45⁺ SSC-high |
+  | Other immune | CD45⁺ SSC-low | CD45⁺ SSC-low |
+  | Proximal tubule | CD45⁻ EpCAM-low (+ other EpCAM⁻ cells) | CD45⁻ CD10⁺CD13⁺ |
+  | EpCAM-high epithelium (distal tubule, collecting duct, urothelium) | CD45⁻ EpCAM-high | CD45⁻ NOT CD10⁺CD13⁺ EpCAM-high |
+  | Other CD45⁻ | – (inside EpCAM-low) | CD45⁻ NOT CD10⁺CD13⁺ EpCAM-low |
+
+- **which Flex labels each population is compared with.** Every Flex cell type is listed under the gate it would fall into on FACS. With CD45 + EpCAM, podocytes and fibroblasts (EpCAM⁻) land in the EpCAM-low gate together with the proximal tubule cells, so their labels are counted there too. Both methods then count the same cells.
+- **which markers are compared with their genes** (section C): CD45 and EpCAM, plus CD10 and CD13 with the 4-marker panel.
+
+If the FlowJo file doesn't match the chosen panel, the error message now also asks whether the right panel was chosen.
+
+**2. Several samples per person.** The Flex data is 12 samples from 8 people, and samples of the same person are not independent. A new optional column `donor_id` in the sample sheet says which person each sample comes from. Before any statistics, the samples of one person are combined by adding up their cells, so every person counts once. Section C combines its marker levels the same way.
+
+- **New table:** `A_proportions_per_sample.csv` keeps every single sample.
+- **People, not samples:** `A_proportions.csv` and all tests now use one value per person. The terminal prints a note like "Combined 12 scRNA-seq samples into 8 people".
+
+**3. The pool as one reference value.** The FACS pool is one sample. Section A now starts with a **composition overview**: the pool's proportions next to the Flex proportions (the average over the people of each condition) and the reference atlas. It comes as a table (the first table of section A on the website, and `A_composition_overview.csv`) and as a stacked-bar plot with the percentages written in (`A4_composition_overview.png`).
+
+The tests of the Flex people against the pool's value are still there. With 8 people in a group, p can go down to 0.008. With 4 people per condition, the smallest possible p is 0.125.
+
+**Demo data:**
+- Built from individual cell types (neutrophils, T cells, macrophages, proximal tubule, distal tubule, collecting duct, urothelium, podocytes, fibroblasts), which are summed into the gates. The FlowJo export holds the gates of both panels, so the same demo works with either panel.
+- scRNA-seq is 12 samples from 8 people.
+- scRNA-seq captures fewer neutrophils, as is common because neutrophils have little RNA.
+
+**How it was checked:**
+- All 97 tests pass (77 unit tests, 20 app tests). The new tests check:
+  - both panels: no double counting, every gate under the live gate, neutrophils = CD45⁺ SSC-high, every cell type in exactly one population;
+  - switching panels;
+  - podocytes counted with the EpCAM-low cells in the 2-marker panel;
+  - combining samples per person (by hand: (3 + 7) / (10 + 30) = 0.25);
+  - the composition overview (each group adds up to 100%);
+  - a full run with the 2-marker panel;
+  - the panel choice on the website.
+- The new plots were checked by eye.
+
 ---
 
 ## How to use it
@@ -234,7 +344,8 @@ Then open **http://127.0.0.1:5050** in a browser. Stop the server with `Ctrl+C`.
 cd day04
 python facs_vs_scrnaseq.py --demo                    # made-up demo data
 python facs_vs_scrnaseq.py                           # real data from day04/data/
-python facs_vs_scrnaseq.py --condition-column condition --conditions Healthy Disease
+python facs_vs_scrnaseq.py --condition-column condition --seq-conditions Healthy Disease --facs-conditions "Healthy pool" Disease
+python facs_vs_scrnaseq.py --panel CD45_EpCAM       # FACS stained with CD45 + EpCAM only
 ```
 
 **Tests:**
@@ -250,8 +361,22 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
 
 ## Input files (1–3 as in day03, 4 and 5 are new)
 
-1. **`metadata.csv`:** one row per sample, with `sample_id`, `facs_name` (the sample name as it appears in FlowJo) and any condition columns.
-2. **FlowJo export `.xlsx`:** one row per sample, with the count of each population gate and the median of each marker and imaging feature in each population.
+1. **`metadata.csv`:** one row per sample (FACS samples **and** scRNA-seq samples), with:
+   - `sample_id`;
+   - `method` (`FACS` or `scRNA-seq`);
+   - `facs_name`, for FACS samples only: the sample name as it appears in FlowJo;
+   - `donor_id` (optional): the person the sample comes from. Samples of one person are combined;
+   - any condition columns.
+
+   For example:
+   ```
+   sample_id,method,facs_name,donor_id,condition
+   S01,scRNA-seq,,P1,Disease
+   S02,scRNA-seq,,P1,Disease
+   S03,scRNA-seq,,P2,Disease
+   POOL1,FACS,healthy_pool.fcs,,Healthy pool
+   ```
+2. **FlowJo export `.xlsx`:** one row per FACS sample, with the gates of the chosen panel, with the count of each population gate and the median of each marker and imaging feature in each population.
 3. **`scrnaseq_cells.csv`:** one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy.
 4. **`reference_atlas.csv` (optional, new in day04):** a reference single-cell atlas of urine. Either:
    - one row per cell, with `cell_type`, an optional `donor_id` and optional `PTPRC, MME, ANPEP, EPCAM` columns;
@@ -268,4 +393,6 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
 - **Comparing with an atlas:** an atlas is made with other protocols and is usually from healthy people. Small differences from it are expected, and differences in a disease condition can be biology rather than an error. The marker heatmap (E3) only compares patterns (which population is high or low), not absolute levels.
 - **Imaging and outliers:** the S8 imaging features describe morphology, not physiology. An outlier is a reason to look at the images of that sample or those cells, not an automatic reason to exclude them. With few samples, the imaging vs marker correlations (F5) are uncertain, so only strong, significant ones should be trusted.
 - **Local use only:** the web app is meant to run on my own computer. It has no login, and runs are kept in `runs/` until I delete them.
-- **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition.
+- **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition. Against a single FACS pool, at least 6 scRNA-seq samples are needed before p < 0.05 is even possible.
+- **Different samples per method:** a difference between FACS and scRNA-seq can come from the method or from the different people measured (see Step 7).
+- **Placeholder gates and labels:** the SSC-high/low and EpCAM-high/low gate names and the Flex labels per panel are placeholders. Copy the real names from FlowJo and your notebook into `PANELS` in SETTINGS. Squamous epithelial cells aren't assigned to a gate yet: add their label where they fall in your data.

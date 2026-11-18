@@ -10,7 +10,7 @@ python -m pytest test_business_logic.py -v      # only the business-logic tests 
 python -m pytest -v                             # all tests: these + test_app.py (~1.5 minutes)
 ```
 
-All **46 tests pass**, along with the 17 older tests in `test_app.py` (63 in total).
+All **77 tests pass**, along with the 20 tests in `test_app.py` (97 in total).
 
 ---
 
@@ -19,7 +19,7 @@ All **46 tests pass**, along with the 17 older tests in `test_app.py` (63 in tot
 The **business logic** is the part of the program that does the real work: the calculations and rules. In `facs_vs_scrnaseq.py` that means:
 
 - turning FlowJo gate counts and scRNA-seq cell labels into **population proportions**;
-- the **statistics**: Mann-Whitney U, Kruskal-Wallis, Wilcoxon, correlations, Bland-Altman, FDR correction;
+- the **statistics**: Mann-Whitney U, Kruskal-Wallis, one-sample Wilcoxon against a pool, the bootstrap interval, correlations (with exact Spearman p-values), FDR correction;
 - the **atlas comparison**: pooled atlas proportions and the composition difference;
 - the **imaging calculations**: robust z-scores, outlier flags, mean/SD/CI/CV, PCA.
 
@@ -31,7 +31,7 @@ The rest is "plumbing": drawing the plots, the website, and saving files. That p
 |---|---|---|
 | **What it checks** | The whole program and the website, from the outside | One function at a time, from the inside |
 | **Input** | The demo data (10 samples, thousands of cells) | Tiny tables made by hand inside each test |
-| **Question it answers** | "Does everything run, and do all 35 result files appear?" | "Is this number **correct**?" |
+| **Question it answers** | "Does everything run, and do all 40 result files appear?" | "Is this number **correct**?" |
 | **Speed** | About 1.5 minutes | About 5 seconds |
 | **Lab analogy** | Running the whole protocol on a control sample | Checking each reagent and each machine separately |
 
@@ -56,7 +56,7 @@ This is like running a **standard of known concentration** through an assay: if 
 The expected answers were **not** copied from the program's own output; that would only test that the program agrees with itself. They come from:
 
 - **hand calculations**, written as comments in the test. For example, the Benjamini-Hochberg q-values for p = 0.01, 0.04, 0.03 and 0.005 are worked out step by step;
-- **exact values from statistics**. For example, two completely separated groups of 5 give an exact Mann-Whitney p-value of 2/252, and 5 paired differences all in the same direction give a Wilcoxon p-value of 2/32;
+- **exact values from statistics**. For example, two completely separated groups of 5 give an exact Mann-Whitney p-value of 2/252, 5 samples all above one pooled value give a one-sample Wilcoxon p-value of 2/32, and 4 points in perfect order give an exact Spearman p-value of 2/24;
 - **logical rules that must always hold**. For example, proportions of one sample must add up to 1, and a q-value can never be smaller than its p-value;
 - **extreme cases**. For example, a sample identical to the atlas must have a composition difference of 0, and a sample with nothing in common with it must have 1.
 
@@ -99,11 +99,18 @@ One test first failed: "a q-value is never smaller than its p-value." The reason
 
 ### 0. The gating settings (no double counting)
 
+The first five tests run once for **each FACS panel** (CD45 + EpCAM, and CD45 + EpCAM + CD10 + CD13), so they appear twice in the results.
+
 | Test | What it checks |
 |---|---|
 | `test_no_population_gate_sits_inside_another` | No population gate is a child of another population gate. If one were, its cells would be counted in both populations, and the proportions would be wrong. |
 | `test_every_population_gate_is_below_the_live_gate` | Every population comes from live cells (Fixable Yellow negative). |
 | `test_no_cell_type_label_belongs_to_two_populations` | A scRNA-seq or atlas label isn't listed under two populations, which would also count cells twice. |
+| `test_every_demo_cell_type_falls_into_exactly_one_population` | Every cell type (neutrophil, T cell, proximal tubule, ...) lands in exactly one gate of the panel, like every live cell on FACS. |
+| `test_neutrophils_are_the_ssc_high_cd45_positive_cells` | In both panels, neutrophils are the CD45⁺ SSC-high gate and are matched with the Flex label "Neutrophil". |
+| `test_use_panel_switches_populations_and_markers` | Switching panels changes the populations and markers. CD45 + EpCAM finds proximal tubule as CD45⁻ EpCAM-low, while the 4-marker panel uses CD10⁺CD13⁺. An unknown panel stops with a message. |
+| `test_two_marker_panel_counts_podocytes_with_the_epcam_low_cells` | With CD45 + EpCAM, podocytes and proximal tubule cells (both EpCAM-low) are counted in the same population, as they are on FACS. |
+| `test_missing_facs_column_message_names_the_panel` | A missing FlowJo column also asks whether the right panel was chosen. |
 
 ### 1. Loading the data
 
@@ -112,7 +119,13 @@ One test first failed: "a q-value is never smaller than its p-value." The reason
 | `test_get_column_returns_the_column` | Asking for an existing column returns it. |
 | `test_get_column_missing_stops_and_lists_real_columns` | A wrong column or gate name stops the program with a message that shows both the wrong name and the names that do exist. |
 | `test_load_metadata_keeps_sample_ids_as_text` | Sample ID `01` stays `"01"` and doesn't become the number 1. Otherwise it wouldn't match the other files. |
-| `test_load_metadata_without_facs_name_column_stops` | A sample sheet missing a required column is rejected. |
+| `test_load_metadata_reads_the_method_of_each_sample` | Each sample gets its method (FACS or scRNA-seq), and ways of writing it such as `facs` or `Flex` are understood. scRNA-seq samples don't need a FlowJo name. |
+| `test_load_metadata_unknown_method_stops` | A method the program doesn't know (e.g. "microscopy") stops with a message naming it. |
+| `test_load_metadata_facs_sample_without_flowjo_name_stops` | A FACS sample without `facs_name` is rejected, because it couldn't be found in the FlowJo export. |
+| `test_load_metadata_same_sample_twice_for_one_method_stops` | The same sample ID twice for one method is rejected, because it would mix up two samples. |
+| `test_load_metadata_old_sheet_without_method_means_both_methods` | An older sheet without a `method` column still works: every sample is listed once for each method. |
+| `test_load_metadata_old_sheet_without_facs_name_column_stops` | An old-style sheet missing the `facs_name` column is rejected. |
+| `test_choose_conditions_separately_for_each_method` | Conditions are chosen per method. A FACS-only condition such as "Healthy pool" can't be chosen for scRNA-seq. |
 | `test_load_facs_drops_flowjo_summary_rows_and_uses_sample_ids` | The "Mean" and "SD" rows that FlowJo adds under the samples are ignored, and `.fcs` names are translated to sample IDs. |
 | `test_load_seq_translates_labels_to_populations` | Each scRNA-seq cell label gets the right population. Unknown labels become "Other", and cells from samples not in the sample sheet are removed. |
 
@@ -125,7 +138,13 @@ One test first failed: "a q-value is never smaller than its p-value." The reason
 | `test_build_proportions_total_denominator_includes_other_cells` | With `PROPORTION_DENOMINATOR = "total"`, FACS divides by the live gate and scRNA-seq by all cells including "Other". |
 | `test_build_proportions_sample_without_cells_gives_nan_not_crash` | A sample with 0 cells gives "no value" (NaN) instead of a division-by-zero crash. |
 | `test_build_proportions_unknown_denominator_stops` | A typo in `PROPORTION_DENOMINATOR` stops the program with a message. |
-| `test_build_protein_vs_rna_needs_enough_cells_for_an_rna_mean` | The RNA mean is calculated correctly (1…12 → 6.5) when there are enough cells. With fewer than `MIN_CELLS_FOR_RNA_MEAN` (10) cells it is left empty, because a mean of 5 cells is unreliable. |
+| `test_build_proportions_methods_can_have_different_samples` | A FACS pool and two other scRNA-seq people each keep their own samples, method and condition in the proportions table. |
+| `test_combine_per_donor_counts_every_person_once` | Two samples of one person (3 of 10 and 7 of 30 cells) become one person with (3 + 7) / (10 + 30) = 0.25, so every person counts once. |
+| `test_combine_per_donor_without_donor_column_changes_nothing` | Without a `donor_id` column, every sample stays its own person. |
+| `test_composition_overview_puts_pool_flex_and_atlas_side_by_side` | The overview shows the pool's own value (0.4), the Flex average over people (0.3) and the atlas (0.5). Each group adds up to 100%. |
+| `test_build_rna_markers_needs_enough_cells_for_an_rna_mean` | The RNA mean is calculated correctly (1…12 → 6.5) when there are enough cells. With fewer than `MIN_CELLS_FOR_RNA_MEAN` (10) cells it is left empty, because a mean of 5 cells is unreliable. |
+| `test_build_facs_markers_reads_the_gate_medians` | The FACS marker medians are read for every sample × population × marker. |
+| `test_build_protein_vs_rna_compares_typical_levels_of_different_samples` | Protein (median of 100, 200, 900 = 200) and RNA (median of 1 and 3 = 2) come from different samples and are summarised per population, with the number of samples. Populations without data still get a row. |
 
 ### 3. Statistics
 
@@ -136,14 +155,22 @@ One test first failed: "a q-value is never smaller than its p-value." The reason
 | `test_fdr_correct_keeps_skipped_tests_as_nan` | Skipped tests stay empty and aren't counted as tests. |
 | `test_correlate_perfect_line` | y = 2x + 1 gives Spearman r = 1 and Pearson r = 1. |
 | `test_correlate_curve_spearman_one_pearson_below_one` | y = x³ (always rising, but curved) gives Spearman = 1 and Pearson < 1. This shows the difference between the two correlations. |
+| `test_correlate_spearman_p_is_exact_for_few_points` | 4 points in perfect order give the exact p = 2/24. scipy's approximation would give 0. |
 | `test_correlate_drops_missing_pairs_and_skips_impossible_tests` | Pairs with a missing value are dropped. With fewer than 3 pairs, or with no variation, no correlation is computed. |
 | `test_compare_groups_two_groups_uses_mann_whitney` | Two groups → Mann-Whitney U, with the exact p-value (2/252) and the correct medians. |
 | `test_compare_groups_three_groups_kruskal_then_every_pair` | Three groups → Kruskal-Wallis first, then every pair (A vs B, A vs C, B vs C). |
 | `test_compare_groups_leaves_out_too_small_groups` | Groups with fewer than 3 values, counted after removing missing values, are left out. |
-| `test_method_agreement_identical_methods_have_no_bias` | If FACS and scRNA-seq agree perfectly, the Bland-Altman bias is 0, the correlation is 1 and the Wilcoxon test is skipped. |
-| `test_method_agreement_finds_a_constant_shift` | If scRNA-seq always gives 0.05 more, the bias is 0.05 and the Wilcoxon p-value is the exact 2/32. |
+| `test_compare_to_reference_two_groups_uses_mann_whitney` | Two groups of different samples → Mann-Whitney U, exact p = 2/252. |
+| `test_compare_to_reference_against_a_single_pool_uses_wilcoxon` | 5 samples against ONE pooled value → one-sample Wilcoxon, exact p = 2/32 (also the other way round). |
+| `test_compare_to_reference_too_few_samples_or_no_difference_gives_no_test` | 2 samples vs 1, all values equal to the pool, or nothing to compare with → no test. |
+| `test_bootstrap_interval_keeps_a_single_pool_fixed` | The bootstrap interval of the difference: exactly 0.2 when there is no spread, contains the observed difference otherwise, and is empty for 1 vs 1. |
+| `test_method_comparison_against_a_pool` | scRNA-seq group vs a FACS pool: medians, difference, ratio, test name, p = 2/32 and an interval that contains the difference. |
+| `test_method_comparison_two_groups_and_every_combination` | Every scRNA-seq condition is compared with every FACS condition. Two groups use Mann-Whitney. Populations that are 0 everywhere get no test and no ratio. |
 | `test_condition_stats_compares_conditions_and_flags_significance` | Healthy vs Disease is compared correctly (p = 2/70), the q-value is added, and the result is marked significant. |
 | `test_condition_stats_with_one_condition_gives_empty_table` | With only one condition there's nothing to compare, so the table is empty instead of the program crashing. |
+| `test_condition_stats_compares_conditions_only_within_one_method` | Conditions are only compared within a method. A FACS side with one big group and a single pool gives no test. |
+| `test_protein_rna_stats_same_order_of_populations_gives_r_one` | Protein and RNA that put the populations in the same order give r = 1, per marker (n = 4 populations) and for all markers together (n = 16). |
+| `test_scale_0_1` | Values are rescaled from 0 (lowest) to 1 (highest). Without spread there is no scale. |
 
 ### 4b. Section E – reference atlas
 
@@ -156,6 +183,7 @@ One test first failed: "a q-value is never smaller than its p-value." The reason
 | `test_composition_difference_zero_half_and_one` | Identical to the atlas → 0; half the cells different → 0.5; nothing in common → 1. |
 | `test_composition_difference_scores_atlas_donors_when_there_are_several` | With several atlas donors, each donor is also scored against the pooled atlas. |
 | `test_atlas_comparison_uses_mann_whitney_with_enough_donors_else_wilcoxon` | With 1 atlas donor, the program uses a one-sample Wilcoxon test against the atlas proportion. With 3 or more donors, it uses Mann-Whitney U against the donors. It also checks that "difference" = our median − atlas proportion. |
+| `test_atlas_comparison_single_pool_against_the_donors` | A single FACS pool is compared with the atlas by testing the 5 donors against the pool's value (p = 2/32). |
 | `test_build_marker_profiles_scales_each_marker_from_0_to_1` | The three sources (atlas RNA, Flex RNA, FACS protein) use different units, but after scaling the lowest population is 0, the highest is 1, and the three agree. |
 | `test_build_marker_profiles_skipped_for_summary_atlas` | A summary-table atlas has no gene values, so the marker comparison is skipped. |
 

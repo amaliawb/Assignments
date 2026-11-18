@@ -2,38 +2,61 @@
 facs_vs_scrnaseq.py
 ===================
 
-Compare urine cell populations measured two ways on the SAME samples:
+Compare urine cell populations measured two ways:
 
   1. Flow cytometry / imaging sorting on the BD FACSDiscover S8
      (gated in FlowJo, exported as an Excel table)
   2. 10x Genomics Flex single-cell RNA-seq
      (processed and annotated in a Jupyter notebook, exported as a CSV)
 
-FACS gating:
-  Cells -> Single Cells -> Live (Fixable Yellow negative)
-    Live  -> CD45+ / CD45-
-    CD45- -> CD10+ CD13+ / NOT (CD10+ CD13+)
-    NOT (CD10+ CD13+) -> EpCAM+ / EpCAM-
+The two methods do NOT have to be run on the same samples. Each sample in the
+sample sheet belongs to one method. For example, the scRNA-seq results of a
+group of patients can be compared with the FACS results of
+  - a POOL of healthy urine from several people (one FACS sample), or
+  - SEVERAL patient samples measured by FACS (other people than the scRNA-seq ones).
+Because the samples differ, the methods are compared as GROUPS (unpaired),
+not sample by sample. Several samples of the same person are first combined
+into one (donor_id column), so every person counts once. A FACS pool is ONE
+reference value: its proportions are shown next to the Flex proportions and
+the reference atlas (plot A4), and the Flex people are tested against it.
 
-Populations (they do not overlap: each live cell falls in exactly one,
-so the proportions add up to 100% of live cells):
-  - Immune cells           : CD45+
-  - Proximal tubule cells  : CD45- CD10+ CD13+          (EpCAM+ or EpCAM-)
-  - Epithelial cells       : CD45- NOT(CD10+ CD13+) EpCAM+
-  - Other CD45- cells      : CD45- NOT(CD10+ CD13+) EpCAM-
+FACS panels and gating (choose the panel in SETTINGS, with --panel, or on the website):
+  Both panels: Cells -> Single Cells -> Live (Fixable Yellow negative)
+               Live  -> CD45+ -> SSC high = Neutrophils / SSC low = Other immune
+  Panel "CD45_EpCAM" (CD45 + EpCAM):
+               CD45- -> EpCAM high = distal tubule, collecting duct, urothelium
+                     -> EpCAM low  = proximal tubule (the CD10+ CD13+ cells)
+                                     (+ other EpCAM-negative CD45- cells)
+  Panel "CD45_EpCAM_CD10_CD13" (CD45 + EpCAM + CD10 + CD13):
+               CD45- -> CD10+ CD13+ = proximal tubule
+                     -> NOT (CD10+ CD13+) -> EpCAM high = distal tubule, collecting duct, urothelium
+                                          -> EpCAM low  = other CD45- cells
+
+The populations of a panel do not overlap: each live cell falls in exactly one,
+so the proportions add up to 100% of live cells. Each population is linked to
+the Flex cell-type labels that would fall into its gate, so FACS and Flex are
+always compared population by population, whichever panel was used.
 
 What the program produces (in the results folder):
-  A. Cell-type PROPORTIONS per sample, FACS vs scRNA-seq
-       - agreement between methods: Spearman + Pearson correlation,
-         paired Wilcoxon signed-rank test, Bland-Altman bias / limits of agreement
-  B. Differences between CONDITIONS (chosen when you run the program)
+  A. Cell-type PROPORTIONS, scRNA-seq group vs FACS group
+       - composition overview: the average proportions of every FACS group
+         (e.g. the pool), every scRNA-seq group and the reference atlas side by side
+       - every chosen scRNA-seq condition is compared with every chosen FACS
+         condition (e.g. "Disease (seq) vs Healthy pool (FACS)")
+       - difference and ratio of the medians, with a bootstrap 95% interval
+       - groups of >= 3 samples on both sides : Mann-Whitney U test
+         one side is a single sample (a pool)  : one-sample Wilcoxon test of the
+                                                 other side against that value
+       - all p-values corrected for multiple testing (Benjamini-Hochberg FDR)
+  B. Differences between CONDITIONS within each method
        - 2 conditions  : Mann-Whitney U test
        - 3+ conditions : Kruskal-Wallis test + pairwise Mann-Whitney U tests
-       - all p-values corrected for multiple testing (Benjamini-Hochberg FDR)
-  C. PROTEIN vs RNA: FACS median intensity of each marker vs. mean RNA
-     expression of its gene (CD45-PTPRC, CD10-MME, CD13-ANPEP, EpCAM-EPCAM)
-  D. S8 IMAGING features per population: differences between populations
-     and between conditions
+  C. PROTEIN vs RNA per population: typical FACS median intensity of each
+     marker vs typical RNA expression of its gene (CD45-PTPRC, EpCAM-EPCAM,
+     and with the 4-marker panel also CD10-MME, CD13-ANPEP). Do the same
+     populations come out high/low?
+  D. S8 IMAGING features per population (FACS samples): differences between
+     populations and between conditions
   E. REFERENCE ATLAS (optional): compare FACS and Flex with a published
      single-cell atlas of urine with known cell types
        - proportions of each population vs the atlas (per condition)
@@ -52,13 +75,16 @@ HOW TO RUN
 -------------------------------------------------------------------------------
   Try it first with made-up demo data (creates a "demo_data" folder):
       python facs_vs_scrnaseq.py --demo
+      python facs_vs_scrnaseq.py --demo --panel CD45_EpCAM      (the 2-marker panel)
 
   With your real data (after editing the SETTINGS section below):
       python facs_vs_scrnaseq.py
 
-  The program will ask which metadata column holds the conditions and which
-  conditions to include. You can skip the questions by giving them directly:
-      python facs_vs_scrnaseq.py --condition-column condition --conditions Healthy Disease
+  The program will ask which metadata column holds the conditions, and which
+  conditions to include for the scRNA-seq samples and for the FACS samples.
+  You can skip the questions by giving them directly:
+      python facs_vs_scrnaseq.py --condition-column condition \
+          --seq-conditions Disease --facs-conditions "Healthy pool" Disease
 
   Or use the web interface instead of the terminal (see app.py):
       python app.py        then open http://127.0.0.1:5000
@@ -68,18 +94,37 @@ HOW TO RUN
 -------------------------------------------------------------------------------
 INPUT FILES
 -------------------------------------------------------------------------------
-1) metadata.csv - one row per sample. Required columns:
-      sample_id   : the sample name used in the scRNA-seq file
-      facs_name   : the sample name exactly as it appears in the FlowJo export
-                    (usually the .fcs file name)
-   Plus any number of columns describing the samples (condition, donor, sex,
+1) metadata.csv - one row per sample (FACS samples AND scRNA-seq samples).
+   Required columns:
+      sample_id   : the sample name (for scRNA-seq: as used in the scRNA-seq file)
+      method      : "FACS" or "scRNA-seq" - which method measured this sample
+      facs_name   : FACS samples only: the sample name exactly as it appears in
+                    the FlowJo export (usually the .fcs file name). Leave it
+                    empty for scRNA-seq samples.
+   Optional column:
+      donor_id    : the PERSON the sample comes from. Several samples of one
+                    person (e.g. 12 Flex samples from 8 people) are combined
+                    into one per person before the statistics: samples of the
+                    same person are not independent. Empty = its own person.
+   Plus any number of columns describing the samples (condition, sex,
    flex_probe_barcode, ...). You choose the condition column when you run.
+   Example:
+      sample_id,method,facs_name,donor_id,condition
+      S01,scRNA-seq,,P1,Disease
+      S02,scRNA-seq,,P1,Disease       <- a second sample of person P1
+      S03,scRNA-seq,,P2,Disease
+      POOL1,FACS,healthy_pool.fcs,,Healthy pool
+   A pool of urine from several people is ONE FACS sample (one row). Only list
+   repeated measurements of the same pool as separate rows if you accept that
+   the tests then treat them as independent samples (they are not).
+   (An older sheet WITHOUT a method column is still accepted: every row is then
+   taken to be measured by both methods.)
 
-2) FlowJo Excel export (Table Editor -> export as .xlsx). One row per sample.
+2) FlowJo Excel export (Table Editor -> export as .xlsx). One row per FACS sample.
    The first column holds the sample name; the other columns are statistics:
       - the Count of the total gate (e.g. live single cells)
-      - the Count of each population gate
-      - the Median of each marker channel inside each population gate
+      - the Count of each population gate of the chosen panel
+      - the Median of each marker channel of the panel inside each population gate
       - the Median of each S8 imaging feature inside each population gate
    Column names are built from the templates in SETTINGS (COUNT_COLUMN,
    MEDIAN_COLUMN). If a name does not match, the program prints the column
@@ -87,7 +132,7 @@ INPUT FILES
 
 3) scrnaseq_cells.csv - one row per cell, exported from your notebook.
    Columns: cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM
-   (cells already demultiplexed by Flex probe barcode -> sample_id, and
+   (MME and ANPEP are only needed with the CD45_EpCAM_CD10_CD13 panel; cells already demultiplexed by Flex probe barcode -> sample_id, and
    already annotated). Gene values should be log-normalized expression.
 
    Why this format: it holds everything needed (labels + the 4 marker genes),
@@ -145,7 +190,9 @@ INPUT FILES
 # -----------------------------------------------------------------------------
 # IMPORTS - the libraries this program uses
 # -----------------------------------------------------------------------------
-import argparse            # reads options typed on the command line (--demo, --conditions, ...)
+import argparse            # reads options typed on the command line (--demo, --seq-conditions, ...)
+import functools           # remembers (caches) results that are needed again
+import itertools           # all possible orderings, for the exact Spearman p-value
 from pathlib import Path   # handles file and folder paths the same way on Mac and Windows
 
 import matplotlib
@@ -171,8 +218,22 @@ OUTPUT_DIR = SCRIPT_DIR / "results"                 # all tables and plots go he
 
 # Column names in the metadata and scRNA-seq files
 SAMPLE_COLUMN = "sample_id"      # the sample ID shared by metadata and scRNA-seq file
-FACS_NAME_COLUMN = "facs_name"   # the sample name as FlowJo writes it
+METHOD_COLUMN = "method"         # which method measured the sample: FACS or scRNA-seq
+DONOR_COLUMN = "donor_id"        # optional: the PERSON each sample comes from. Samples of the
+                                 # same person (and method and condition) are combined into one
+                                 # before the statistics, because they are not independent.
+                                 # Empty / missing = every sample is its own person.
+FACS_NAME_COLUMN = "facs_name"   # the sample name as FlowJo writes it (FACS samples)
 CELL_TYPE_COLUMN = "cell_type"   # the annotation label of each sequenced cell
+
+# The two methods, and the ways they may be written in the method column
+# (compared in lower case, without spaces, dashes or underscores)
+METHODS = ["scRNA-seq", "FACS"]
+METHOD_ALIASES = {
+    "facs": "FACS", "flow": "FACS", "flowcytometry": "FACS", "s8": "FACS",
+    "scrnaseq": "scRNA-seq", "seq": "scRNA-seq", "rnaseq": "scRNA-seq",
+    "flex": "scRNA-seq", "10x": "scRNA-seq", "10xflex": "scRNA-seq",
+}
 
 # ---- Reference atlas (optional, section E) -----------------------------------
 # Put the atlas file in the data folder (or upload it on the website). If it is
@@ -188,58 +249,116 @@ ATLAS_COUNT_COLUMN = "n_cells"         # optional: number of cells in the row (s
 COUNT_COLUMN = "{gate} | Count"
 MEDIAN_COLUMN = "{gate} | Median ({parameter})"
 
-# ---- Gating hierarchy ------------------------------------------------------------
-#   Cells -> Single Cells -> Live -> CD45+                                (Immune)
-#                                 -> CD45- -> CD10+ CD13+                  (Proximal tubule)
-#                                          -> NOT CD10+ CD13+ -> EpCAM+    (Epithelial)
-#                                                             -> EpCAM-    (Other CD45-)
-# "Live" = cells NEGATIVE for the Fixable Yellow live/dead dye (dead cells take
-# up the dye and are bright).
-# Why CD10/CD13 is gated BEFORE EpCAM: proximal tubule cells can express EpCAM.
-# If the EpCAM+ and CD10+ CD13+ gates both sat directly under CD45-, a cell
-# positive for both would be counted twice and the proportions would be wrong.
-# "NOT CD10+ CD13+" is the inverse of the CD10+ CD13+ gate (FlowJo: Boolean
-# NOT gate, or Make Gate -> Invert). Use the gate names exactly as in FlowJo.
+# ---- Which antibodies were used: the FACS PANEL ---------------------------------
+# Choose the panel that matches your staining. It decides the gating (which
+# populations exist), which Flex labels each population is compared with, and
+# which markers are compared with their genes (section C). It can also be chosen
+# per run: on the command line with --panel, or on the website.
+#   "CD45_EpCAM"           : CD45 + EpCAM (+ Fixable Yellow)
+#   "CD45_EpCAM_CD10_CD13" : CD45 + EpCAM + CD10 + CD13 (+ Fixable Yellow)
+FACS_PANEL = "CD45_EpCAM_CD10_CD13"
+
+# The viability dye is used in both panels: "Live" = cells NEGATIVE for Fixable
+# Yellow (dead cells take up the dye and are bright). Use the gate names exactly as in FlowJo.
 LIVE_GATE = "Cells/Single Cells/Live"     # live/dead gate on Fixable Yellow
 VIABILITY_DYE = "Fixable Yellow"          # only for documentation; not used in calculations
+CD45_POS_GATE = f"{LIVE_GATE}/CD45+"
 CD45_NEG_GATE = f"{LIVE_GATE}/CD45-"
 NOT_PT_GATE = f"{CD45_NEG_GATE}/NOT CD10+ CD13+"
 
 # Gate that holds ALL good cells (used only if PROPORTION_DENOMINATOR = "total")
 FACS_TOTAL_GATE = LIVE_GATE
 
-# ---- The four populations -------------------------------------------------------
-# "gate"       : the FlowJo gate path of the population
-# "seq_labels" : which cell_type labels from your notebook belong to this
-#                population (list ALL the labels you used, e.g. every immune subtype)
+# ---- The two panels ---------------------------------------------------------------
+# For every panel, the populations it can tell apart. For every population:
+# "gate"        : the FlowJo gate path of the population
+# "seq_labels"  : which cell_type labels from your Flex notebook belong to this
+#                 population (list ALL the labels you used, e.g. every immune subtype)
 # "atlas_labels": which cell_type names of the REFERENCE ATLAS belong to this
-#                population (an atlas usually names cell types differently from
-#                your notebook). If left out, the seq_labels are used.
-#                These are placeholders - copy the real names from your atlas.
-# The four gates do not overlap and together cover every live cell, so each
+#                 population (an atlas usually names cell types differently from
+#                 your notebook). If left out, the seq_labels are used.
+# The labels are placeholders - copy the real names from your notebook / atlas.
+# The gates of a panel do not overlap and together cover every live cell, so each
 # cell is counted exactly once (like in scRNA-seq, where each cell has one label).
-POPULATIONS = {
-    "Immune": {
-        "gate": f"{LIVE_GATE}/CD45+",
-        "seq_labels": ["T cell", "Macrophage", "Neutrophil"],
-        "atlas_labels": ["T/NK cell", "Myeloid cell", "Neutrophil"],
+# That is why every Flex label must be listed under the population whose GATE
+# that cell type would fall into on FACS - e.g. with CD45 + EpCAM only, podocytes
+# and fibroblasts (CD45-, EpCAM low) land in the EpCAM-low gate together with the
+# proximal tubule cells, so they are listed there too.
+#
+# Both panels start the same way:
+#   Live -> CD45+ -> SSC high : Neutrophils   (granular cells: high side scatter)
+#                 -> SSC low  : Other immune   (lymphocytes, monocytes, macrophages)
+#        -> CD45-  -> ... (differs per panel, see below)
+# EpCAM high = distal tubule, collecting duct and urothelium.
+# EpCAM low  = proximal tubule (the same cells as CD10+ CD13+), plus other
+#              EpCAM-negative CD45- cells.
+IMMUNE_POPULATIONS = {
+    "Neutrophils": {
+        "gate": f"{CD45_POS_GATE}/SSC high",
+        "seq_labels": ["Neutrophil"],
+        "atlas_labels": ["Neutrophil"],
     },
-    "Proximal tubule": {
-        "gate": f"{CD45_NEG_GATE}/CD10+ CD13+",
-        "seq_labels": ["Proximal tubule cell"],
-        "atlas_labels": ["Proximal tubule"],
+    "Other immune": {
+        "gate": f"{CD45_POS_GATE}/SSC low",
+        "seq_labels": ["T cell", "NK cell", "B cell", "Monocyte", "Macrophage"],
+        "atlas_labels": ["T/NK cell", "B cell", "Myeloid cell"],
     },
-    "Epithelial": {
-        "gate": f"{NOT_PT_GATE}/EpCAM+",
-        "seq_labels": ["Urothelial cell", "Squamous epithelial cell"],
-        "atlas_labels": ["Urothelial", "Squamous"],
+}
+EPCAM_HIGH_LABELS = {
+    "seq_labels": ["Distal tubule cell", "Collecting duct cell", "Urothelial cell"],
+    "atlas_labels": ["Distal tubule", "Collecting duct", "Urothelial"],
+}
+# Squamous epithelial cells (from the urethra / vagina) are not listed: add their
+# label to whichever gate they fall into in your own data.
+
+PANELS = {
+    # CD45 + EpCAM:
+    #   CD45- -> EpCAM high : distal tubule, collecting duct, urothelium
+    #         -> EpCAM low  : proximal tubule (+ other EpCAM-negative CD45- cells)
+    "CD45_EpCAM": {
+        "description": "CD45 + EpCAM (+ Fixable Yellow)",
+        "markers": ["CD45", "EpCAM"],
+        "populations": {
+            **IMMUNE_POPULATIONS,
+            "EpCAM-low (proximal tubule)": {
+                "gate": f"{CD45_NEG_GATE}/EpCAM low",
+                "seq_labels": ["Proximal tubule cell", "Podocyte", "Fibroblast"],
+                "atlas_labels": ["Proximal tubule", "Podocyte", "Fibroblast"],
+            },
+            "EpCAM-high epithelium": {
+                "gate": f"{CD45_NEG_GATE}/EpCAM high",
+                **EPCAM_HIGH_LABELS,
+            },
+        },
     },
-    "Other CD45-": {
-        "gate": f"{NOT_PT_GATE}/EpCAM-",
-        # Placeholder labels: every notebook label that is not immune, not proximal
-        # tubule and not EpCAM+ epithelial (e.g. podocytes, fibroblasts)
-        "seq_labels": ["Podocyte", "Fibroblast"],
-        "atlas_labels": ["Podocyte", "Fibroblast"],
+    # CD45 + EpCAM + CD10 + CD13:
+    #   CD45- -> CD10+ CD13+         : proximal tubule
+    #         -> NOT (CD10+ CD13+) -> EpCAM high : distal tubule, collecting duct, urothelium
+    #                              -> EpCAM low  : other CD45- cells (podocytes, fibroblasts, ...)
+    # Why CD10/CD13 is gated BEFORE EpCAM: proximal tubule cells can carry some
+    # EpCAM. If the EpCAM and CD10+ CD13+ gates both sat directly under CD45-, a
+    # cell positive for both would be counted twice. "NOT CD10+ CD13+" is the
+    # inverse of the CD10+ CD13+ gate (FlowJo: Boolean NOT gate, or Make Gate -> Invert).
+    "CD45_EpCAM_CD10_CD13": {
+        "description": "CD45 + EpCAM + CD10 + CD13 (+ Fixable Yellow)",
+        "markers": ["CD45", "CD10", "CD13", "EpCAM"],
+        "populations": {
+            **IMMUNE_POPULATIONS,
+            "Proximal tubule": {
+                "gate": f"{CD45_NEG_GATE}/CD10+ CD13+",
+                "seq_labels": ["Proximal tubule cell"],
+                "atlas_labels": ["Proximal tubule"],
+            },
+            "EpCAM-high epithelium": {
+                "gate": f"{NOT_PT_GATE}/EpCAM high",
+                **EPCAM_HIGH_LABELS,
+            },
+            "Other CD45-": {
+                "gate": f"{NOT_PT_GATE}/EpCAM low",
+                "seq_labels": ["Podocyte", "Fibroblast"],
+                "atlas_labels": ["Podocyte", "Fibroblast"],
+            },
+        },
     },
 }
 
@@ -247,12 +366,30 @@ POPULATIONS = {
 # "facs_parameter" is the channel name FlowJo uses. Replace FLUOR1..4 with your
 # fluorochromes, e.g. "Comp-BV510-A :: CD45" - copy it exactly from FlowJo.
 # "gene" is the column name of the same marker in the scRNA-seq file.
-MARKERS = {
+# Only the markers of the chosen panel are used.
+ALL_MARKERS = {
     "CD45":  {"gene": "PTPRC", "facs_parameter": "Comp-FLUOR1-A :: CD45"},
     "CD10":  {"gene": "MME",   "facs_parameter": "Comp-FLUOR2-A :: CD10"},
     "CD13":  {"gene": "ANPEP", "facs_parameter": "Comp-FLUOR3-A :: CD13"},
     "EpCAM": {"gene": "EPCAM", "facs_parameter": "Comp-FLUOR4-A :: EpCAM"},
 }
+
+
+def use_panel(name):
+    """
+    Switch the whole program to one FACS panel: sets POPULATIONS (the gates and
+    their Flex / atlas labels) and MARKERS (the antibodies and their genes) that
+    every function below uses.
+    """
+    global ACTIVE_PANEL, POPULATIONS, MARKERS
+    if name not in PANELS:
+        raise SystemExit(f"Unknown FACS panel '{name}'. Choose one of: {', '.join(PANELS)}")
+    ACTIVE_PANEL = name                 # FACS_PANEL itself stays the default from SETTINGS
+    POPULATIONS = PANELS[name]["populations"]
+    MARKERS = {marker: ALL_MARKERS[marker] for marker in PANELS[name]["markers"]}
+
+
+use_panel(FACS_PANEL)   # start with the panel chosen above
 
 # ---- S8 imaging features -------------------------------------------------------
 # Names of the imaging parameters exactly as they appear in FlowJo.
@@ -290,12 +427,16 @@ OUTLIER_CUTOFF = 3.5
 PROPORTION_DENOMINATOR = "populations"
 
 MIN_SAMPLES_PER_GROUP = 3     # fewer samples than this -> test is skipped (reported as NaN)
+                              # (exception: a single FACS pool is compared as ONE value, see section A)
 MIN_CELLS_FOR_RNA_MEAN = 10   # a population with fewer cells in a sample gets no RNA mean
 ALPHA = 0.05                  # significance threshold applied to FDR-corrected p-values
+BOOTSTRAP_ROUNDS = 2000       # resamplings for the 95% interval of the method difference (section A)
+MAX_CELLS_PER_VIOLIN = 5000   # violin plots (F6) are drawn from at most this many random cells
+                              # per population (keeps big exports fast; the median uses all cells)
 
 # ---- Plot colors --------------------------------------------------------------
 # One color per population (same order as POPULATIONS), plus one per method.
-POPULATION_COLORS = ["#2a78d6", "#1baf7a", "#eb6834", "#8a63d2"]
+POPULATION_COLORS = ["#2a78d6", "#7fb0ea", "#1baf7a", "#eb6834", "#8a63d2"]
 METHOD_COLORS = {"FACS": "#52514e", "scRNA-seq": "#b5b3ad"}
 ATLAS_COLOR = "#c2477a"       # the reference atlas in the section E plots
 PLOT_DPI = 200                # image resolution (dots per inch) of the saved plots
@@ -305,8 +446,8 @@ PLOT_DPI = 200                # image resolution (dots per inch) of the saved pl
 # 1. LOADING THE DATA
 # =============================================================================
 # These functions read the three main input files, check that the expected columns
-# are there, and match the samples between the files. (The optional reference
-# atlas is read separately, in section 4b.)
+# are there, and link every sample to its method and condition. (The optional
+# reference atlas is read separately, in section 4b.)
 
 def get_column(table, column, file_label):
     """Return one column of a table; if it does not exist, stop and list the real column names."""
@@ -315,23 +456,67 @@ def get_column(table, column, file_label):
     if column not in table.columns:
         # Put every real column name on its own line so they are easy to compare
         available = "\n    ".join(map(str, table.columns))
+        # A missing FACS column often means the wrong panel was chosen
+        hint = (f"\n-> Or check that the FACS panel is right: now '{ACTIVE_PANEL}' "
+                f"({PANELS[ACTIVE_PANEL]['description']}).") if file_label == "the FACS file" else ""
         raise SystemExit(
             f"\nColumn not found in {file_label}:\n    '{column}'\n"
             f"Columns that ARE in the file:\n    {available}\n"
-            "-> Fix the matching name in the SETTINGS section of this script."
+            "-> Fix the matching name in the SETTINGS section of this script." + hint
         )
     # The column exists: hand it back
     return table[column]
 
 
+def normalize_method(value):
+    """Turn what is written in the method column ('facs', 'Flex', 'scRNA-seq', ...) into FACS or scRNA-seq."""
+    key = "".join(ch for ch in str(value).lower() if ch not in " -_")
+    return METHOD_ALIASES.get(key)
+
+
 def load_metadata(path):
-    """Read the sample sheet. Everything is read as text so IDs like '01' stay intact."""
+    """
+    Read the sample sheet. Everything is read as text so IDs like '01' stay intact.
+    Returns one row per sample with a column "method" (FACS or scRNA-seq).
+    """
     # dtype=str keeps sample IDs as text (otherwise '01' would become the number 1)
     metadata = pd.read_csv(path, dtype=str)
-    # Make sure the two required columns exist (stops with a message if not)
     get_column(metadata, SAMPLE_COLUMN, path.name)
-    get_column(metadata, FACS_NAME_COLUMN, path.name)
+
+    if METHOD_COLUMN not in metadata.columns:
+        # Older sheet without a method column: every sample was measured by BOTH
+        # methods, so list each sample once for scRNA-seq and once for FACS
+        get_column(metadata, FACS_NAME_COLUMN, path.name)
+        print(f"Note: {path.name} has no '{METHOD_COLUMN}' column - every sample is taken to be "
+              "measured by both FACS and scRNA-seq.")
+        metadata = pd.concat([metadata.assign(method=m) for m in METHODS], ignore_index=True)
+    else:
+        # Translate the written method names; stop if one is not recognised
+        methods = metadata[METHOD_COLUMN].map(normalize_method)
+        unknown = sorted(set(metadata.loc[methods.isna(), METHOD_COLUMN].astype(str)))
+        if unknown:
+            raise SystemExit(f"Unknown value(s) in the '{METHOD_COLUMN}' column of {path.name}: {unknown}\n"
+                             "Use 'FACS' or 'scRNA-seq' for every sample.")
+        metadata = metadata.drop(columns=METHOD_COLUMN).assign(method=methods.values)
+
+    # FACS samples need their FlowJo name, otherwise they cannot be found in the export
+    is_facs = metadata["method"] == "FACS"
+    if is_facs.any():
+        names = get_column(metadata, FACS_NAME_COLUMN, path.name)
+        missing = sorted(metadata.loc[is_facs & names.isna(), SAMPLE_COLUMN])
+        if missing:
+            raise SystemExit(f"These FACS samples have no '{FACS_NAME_COLUMN}' in {path.name}: {missing}")
+    # The same sample ID twice for one method would mix up two samples
+    duplicated = metadata.duplicated([SAMPLE_COLUMN, "method"])
+    if duplicated.any():
+        raise SystemExit(f"Sample IDs listed twice for the same method in {path.name}: "
+                         f"{sorted(set(metadata.loc[duplicated, SAMPLE_COLUMN]))}")
     return metadata
+
+
+def samples_of(metadata, method):
+    """The rows of the sample sheet measured by one method."""
+    return metadata[metadata["method"] == method]
 
 
 def ask_for_numbers(prompt, n_options, allow_many):
@@ -355,13 +540,20 @@ def ask_for_numbers(prompt, n_options, allow_many):
         print(f"  Please type {'numbers' if allow_many else 'one number'} between 1 and {n_options}.")
 
 
-def choose_conditions(metadata, column=None, values=None):
+def condition_candidates(metadata):
+    """Every metadata column that could hold the conditions (all except the ID and method columns)."""
+    return [c for c in metadata.columns if c not in (SAMPLE_COLUMN, FACS_NAME_COLUMN, "method", DONOR_COLUMN)]
+
+
+def choose_conditions(metadata, column=None, seq_values=None, facs_values=None):
     """
-    Decide which metadata column is the 'condition' and which of its values to analyse.
-    Asks the user in the terminal unless both were given on the command line.
+    Decide which metadata column is the 'condition', and which of its values to
+    analyse for the scRNA-seq samples and for the FACS samples (they can differ,
+    e.g. scRNA-seq 'Disease' vs FACS 'Healthy pool').
+    Asks the user in the terminal for everything not given on the command line.
+    Returns (column, {"scRNA-seq": [...], "FACS": [...]}).
     """
-    # Every metadata column except the two ID columns could hold the conditions
-    candidates = [c for c in metadata.columns if c not in (SAMPLE_COLUMN, FACS_NAME_COLUMN)]
+    candidates = condition_candidates(metadata)
     if not candidates:
         raise SystemExit("The metadata file has no column describing conditions.")
 
@@ -380,34 +572,46 @@ def choose_conditions(metadata, column=None, values=None):
     # Check the column really exists (matters when it was typed on the command line)
     get_column(metadata, column, "the metadata file")
 
-    # --- which values? ---
-    # Count how many samples each condition has (keeps the order of the file)
-    counts = metadata[column].value_counts(sort=False)
-    available = list(counts.index)
-    if values is None:
-        # Show the conditions with their sample counts and let the user choose
-        print(f"\nConditions found in '{column}':")
-        for i, name in enumerate(available, start=1):
-            print(f"  {i}. {name}  ({counts[name]} samples)")
-        picks = ask_for_numbers("Type the numbers to include separated by commas (Enter = all): ",
-                                len(available), allow_many=True)
-        # None = Enter was pressed = use every condition
-        values = available if picks is None else [available[p] for p in picks]
-    else:
-        # Conditions were given on the command line: check they all exist
-        missing = [v for v in values if v not in available]
-        if missing:
-            raise SystemExit(f"Conditions {missing} not found in '{column}'. Available: {available}")
+    # --- which values, separately for each method? ---
+    chosen = {}
+    for method, values in [("scRNA-seq", seq_values), ("FACS", facs_values)]:
+        # Count how many samples of this method each condition has (keeps the order of the file)
+        counts = samples_of(metadata, method)[column].value_counts(sort=False)
+        available = list(counts.index)
+        if not available:
+            raise SystemExit(f"The sample sheet has no {method} samples with a value in '{column}'.")
+        if values is None:
+            # Show the conditions with their sample counts and let the user choose
+            print(f"\n{method} samples - conditions found in '{column}':")
+            for i, name in enumerate(available, start=1):
+                print(f"  {i}. {name}  ({counts[name]} samples)")
+            picks = ask_for_numbers(f"Type the numbers of the {method} conditions to include, "
+                                    "separated by commas (Enter = all): ", len(available), allow_many=True)
+            # None = Enter was pressed = use every condition
+            values = available if picks is None else [available[p] for p in picks]
+        else:
+            # Conditions were given on the command line: check they all exist for this method
+            missing = [v for v in values if v not in available]
+            if missing:
+                raise SystemExit(f"Conditions {missing} not found among the {method} samples in "
+                                 f"'{column}'. Available: {available}")
+        chosen[method] = list(values)
 
-    print(f"\nUsing column '{column}' with conditions: {', '.join(values)}")
-    return column, list(values)
+    print(f"\nUsing column '{column}': scRNA-seq = {', '.join(chosen['scRNA-seq'])} | "
+          f"FACS = {', '.join(chosen['FACS'])}")
+    return column, chosen
+
+
+def all_conditions(conditions):
+    """The chosen conditions of both methods in one list, without repeats (scRNA-seq first)."""
+    return list(dict.fromkeys(conditions["scRNA-seq"] + conditions["FACS"]))
 
 
 def load_facs(path, metadata):
     """
-    Read the FlowJo Excel export and return one row per sample (index = sample_id).
-    Rows FlowJo adds itself (e.g. 'Mean', 'SD') are dropped because they are not
-    listed in the metadata.
+    Read the FlowJo Excel export and return one row per FACS sample (index = sample_id).
+    metadata = the FACS rows of the sample sheet. Rows FlowJo adds itself
+    (e.g. 'Mean', 'SD') are dropped because they are not listed in the metadata.
     """
     # Read the Excel sheet into a table
     facs = pd.read_excel(path, sheet_name=FACS_SHEET)
@@ -434,16 +638,20 @@ def load_seq(path, metadata):
     Read the per-cell scRNA-seq table and add a 'population' column by
     translating each cell_type label using POPULATIONS[...]["seq_labels"].
     Labels not listed anywhere become 'Other'.
+    metadata = the scRNA-seq rows of the sample sheet.
     """
-    # Read the per-cell table; sample IDs stay text (same as in the metadata)
-    cells = pd.read_csv(path, dtype={SAMPLE_COLUMN: str})
+    # Read only the columns that are used (the sample, the label and the marker genes):
+    # an export with many extra columns then loads much faster and uses less memory.
+    # Sample IDs stay text (same as in the metadata).
+    needed = {SAMPLE_COLUMN, CELL_TYPE_COLUMN, *(m["gene"] for m in MARKERS.values())}
+    cells = pd.read_csv(path, dtype={SAMPLE_COLUMN: str}, usecols=lambda c: c in needed)
     # Check that the sample, cell type and the four gene columns are all there
     get_column(cells, SAMPLE_COLUMN, path.name)
     get_column(cells, CELL_TYPE_COLUMN, path.name)
     for marker in MARKERS.values():
         get_column(cells, marker["gene"], path.name)
 
-    # Dictionary: notebook label -> population, e.g. "T cell" -> "Immune"
+    # Dictionary: notebook label -> population, e.g. "T cell" -> "Other immune"
     label_to_population = {
         label: population
         for population, info in POPULATIONS.items()
@@ -462,7 +670,7 @@ def load_seq(path, metadata):
     if missing:
         print(f"WARNING: these samples are in the metadata but not in the scRNA-seq file: {missing}")
     # Keep only cells from the samples (and conditions) chosen for this analysis
-    return cells[cells[SAMPLE_COLUMN].isin(metadata[SAMPLE_COLUMN])]
+    return cells[cells[SAMPLE_COLUMN].isin(metadata[SAMPLE_COLUMN])].copy()
 
 
 # =============================================================================
@@ -470,21 +678,30 @@ def load_seq(path, metadata):
 # =============================================================================
 # These functions turn the raw inputs into "long" tables (one measurement per
 # row) that the statistics and plots below can use directly.
+# FACS and scRNA-seq measured DIFFERENT samples, so each row belongs to one
+# method; FACS and scRNA-seq rows are matched by population (and condition),
+# never by sample.
+
+def add_conditions(table, metadata, condition_column):
+    """Add the condition of each sample as a column (matched on sample ID AND method)."""
+    return table.merge(metadata[[SAMPLE_COLUMN, "method", condition_column]], on=[SAMPLE_COLUMN, "method"])
+
 
 def build_proportions(facs, cells, metadata, condition_column):
     """
-    Long table: one row per sample x population x method, with the cell count
-    and the proportion. This is the table used for sections A and B.
+    Long table: one row per sample x population, with the method, the cell count
+    and the proportion. FACS samples come from the FlowJo table, scRNA-seq samples
+    from the per-cell table. This is the table used for sections A, B and E.
     """
     populations = list(POPULATIONS)
 
-    # FACS counts per population
+    # FACS counts per sample and population
     # (one column per population, taken from that population's gate "Count" column)
     facs_counts = pd.DataFrame({
         pop: get_column(facs, COUNT_COLUMN.format(gate=info["gate"]), "the FACS file")
         for pop, info in POPULATIONS.items()
     })
-    # scRNA-seq counts per population (cells per sample per population)
+    # scRNA-seq counts per sample and population (cells per sample per population)
     seq_counts = pd.crosstab(cells[SAMPLE_COLUMN], cells["population"])
     # Make sure every population has a column, even if it had 0 cells
     seq_counts = seq_counts.reindex(columns=populations + ["Other"], fill_value=0)
@@ -501,77 +718,136 @@ def build_proportions(facs, cells, metadata, condition_column):
     else:
         raise SystemExit("PROPORTION_DENOMINATOR must be 'populations' or 'total'.")
 
-    # Build one row for every sample x population, first for FACS, then for scRNA-seq
-    rows = []
-    for method, counts, total in [("FACS", facs_counts, facs_total),
-                                  ("scRNA-seq", seq_counts, seq_total)]:
-        for sample in counts.index:
-            for pop in populations:
-                rows.append({
-                    SAMPLE_COLUMN: sample,
-                    "population": pop,
-                    "method": method,
-                    "count": counts.loc[sample, pop],
-                    # proportion = count / total (NaN if the sample has no cells at all)
-                    "proportion": counts.loc[sample, pop] / total[sample] if total[sample] > 0 else np.nan,
-                })
-    table = pd.DataFrame(rows)
-    # Add the condition of each sample (e.g. Healthy / Disease) as a column
-    return table.merge(metadata[[SAMPLE_COLUMN, condition_column]], on=SAMPLE_COLUMN)
+    parts = []
+    for method, counts, total in [("scRNA-seq", seq_counts, seq_total), ("FACS", facs_counts, facs_total)]:
+        # From a wide table (one column per population) to a long table (one row per population)
+        long = (counts[populations].rename_axis(index=SAMPLE_COLUMN, columns=None).reset_index()
+                .melt(id_vars=SAMPLE_COLUMN, var_name="population", value_name="count")
+                .sort_values(SAMPLE_COLUMN, kind="stable"))
+        long.insert(1, "method", method)
+        # proportion = count / total of its sample (NaN if the sample has no cells at all)
+        long["total"] = long[SAMPLE_COLUMN].map(total)
+        long["proportion"] = long["count"] / long["total"].where(long["total"] > 0)
+        parts.append(long)
+    # Add the condition of each sample (e.g. Healthy pool / Disease) as a column
+    return add_conditions(pd.concat(parts, ignore_index=True), metadata, condition_column)
 
 
-def build_protein_vs_rna(facs, cells, metadata, condition_column):
+def donor_of_each_row(table, metadata):
+    """The person (DONOR_COLUMN) of the sample in each row; a sample without one is its own person."""
+    if DONOR_COLUMN not in metadata.columns:
+        return table[SAMPLE_COLUMN]
+    lookup = metadata.set_index([SAMPLE_COLUMN, "method"])[DONOR_COLUMN]
+    keys = pd.MultiIndex.from_frame(table[[SAMPLE_COLUMN, "method"]])
+    donors = pd.Series(lookup.reindex(keys).values, index=table.index)
+    return donors.fillna(table[SAMPLE_COLUMN])
+
+
+def combine_per_donor(table, metadata, keys, aggregations):
     """
-    One row per sample x population x marker:
-      protein = FACS median intensity of the marker inside the population gate
-      rna     = mean log-normalized expression of the gene in that population's cells
+    Combine the samples of the same person into one row per person (and method
+    and keys, e.g. population and condition). Samples of one person are not
+    independent, so the statistics must count every person once.
+    aggregations = how each column is combined, e.g. {"count": ("count", "sum")}.
+    Afterwards the sample_id column holds the PERSON, and n_samples_combined says
+    how many samples went into it. Without a donor column nothing changes (1 per row).
     """
-    # Mean expression of each of the four genes, per sample and population
-    rna_means = cells.groupby([SAMPLE_COLUMN, "population"])[
-        [m["gene"] for m in MARKERS.values()]].mean()
-    # Number of sequenced cells per sample and population
-    cell_numbers = cells.groupby([SAMPLE_COLUMN, "population"]).size()
+    table = table.assign(_sample=table[SAMPLE_COLUMN], **{SAMPLE_COLUMN: donor_of_each_row(table, metadata)})
+    return (table.groupby([SAMPLE_COLUMN, "method", *keys], sort=False, dropna=False)
+            .agg(**aggregations, n_samples_combined=("_sample", "nunique")).reset_index())
 
-    rows = []
-    # Go through every population and every marker
+
+def combine_proportions_per_donor(sample_proportions, metadata, condition_column):
+    """
+    The proportions per PERSON: the cells of all samples of a person are added up
+    (counts and totals), then divided again. A person with two samples therefore
+    counts once, like one bigger sample.
+    """
+    table = combine_per_donor(sample_proportions, metadata, ["population", condition_column],
+                              {"count": ("count", "sum"), "total": ("total", "sum")})
+    table["proportion"] = table["count"] / table["total"].where(table["total"] > 0)
+    for method in METHODS:
+        part = sample_proportions[sample_proportions["method"] == method]
+        n_samples = part[SAMPLE_COLUMN].nunique()
+        n_people = table.loc[table["method"] == method, SAMPLE_COLUMN].nunique()
+        if n_people < n_samples:
+            print(f"Combined {n_samples} {method} samples into {n_people} people ('{DONOR_COLUMN}' column).")
+    return table
+
+
+def build_facs_markers(facs, metadata, condition_column):
+    """
+    FACS protein: one row per FACS sample x population x marker, with the median
+    intensity of the marker inside the population gate. Used in sections C, E and F.
+    """
+    parts = []
     for pop, pop_info in POPULATIONS.items():
         for marker, marker_info in MARKERS.items():
-            # FACS: the "Median (marker channel)" column of this population's gate
+            # The "Median (marker channel)" column of this population's gate
             column = MEDIAN_COLUMN.format(gate=pop_info["gate"], parameter=marker_info["facs_parameter"])
-            protein = get_column(facs, column, "the FACS file")
-            for sample in facs.index:
-                key = (sample, pop)
-                # A mean from very few cells is unreliable, so require a minimum
-                enough_cells = cell_numbers.get(key, 0) >= MIN_CELLS_FOR_RNA_MEAN
-                rows.append({
-                    SAMPLE_COLUMN: sample,
-                    "population": pop,
-                    "marker": marker,
-                    "gene": marker_info["gene"],
-                    "protein_median": protein[sample],
-                    "rna_mean": rna_means.loc[key, marker_info["gene"]] if enough_cells else np.nan,
-                    "n_cells_rna": cell_numbers.get(key, 0),
-                })
-    table = pd.DataFrame(rows)
-    # Add the condition of each sample as a column
-    return table.merge(metadata[[SAMPLE_COLUMN, condition_column]], on=SAMPLE_COLUMN)
+            values = get_column(facs, column, "the FACS file")
+            parts.append(pd.DataFrame({SAMPLE_COLUMN: facs.index, "method": "FACS", "population": pop,
+                                       "marker": marker, "gene": marker_info["gene"],
+                                       "protein_median": values.values}))
+    return add_conditions(pd.concat(parts, ignore_index=True), metadata, condition_column)
+
+
+def build_rna_markers(cells, metadata, condition_column):
+    """
+    scRNA-seq RNA: one row per scRNA-seq sample x population x marker, with the mean
+    log-normalized expression of the marker's gene in that population's cells.
+    A population with fewer than MIN_CELLS_FOR_RNA_MEAN cells in a sample gets no mean.
+    """
+    gene_to_marker = {info["gene"]: marker for marker, info in MARKERS.items()}
+    known = cells[cells["population"].isin(list(POPULATIONS))]
+    grouped = known.groupby([SAMPLE_COLUMN, "population"])
+    # Mean expression of each marker gene, per sample and population
+    means = grouped[list(gene_to_marker)].mean()
+    n_cells = grouped.size()
+    # A mean from very few cells is unreliable, so require a minimum
+    means.loc[n_cells < MIN_CELLS_FOR_RNA_MEAN] = np.nan
+    table = (means.assign(n_cells_rna=n_cells).reset_index()
+             .melt(id_vars=[SAMPLE_COLUMN, "population", "n_cells_rna"], var_name="gene", value_name="rna_mean"))
+    table.insert(1, "method", "scRNA-seq")
+    table.insert(3, "marker", table["gene"].map(gene_to_marker))
+    return add_conditions(table, metadata, condition_column)
+
+
+def build_protein_vs_rna(facs_markers, rna_markers):
+    """
+    Section C: one row per population x marker. The samples differ between the
+    methods, so the TYPICAL level of each population is compared:
+      protein = median over the FACS samples of the gate's median intensity
+      rna     = median over the scRNA-seq samples of the per-sample mean expression
+    plus the spread (25th-75th percentile) and the number of samples behind each.
+    """
+    def summarise(table, value, name, n_name):
+        grouped = table.groupby(["population", "marker"])[value]
+        return pd.DataFrame({f"{name}_median": grouped.median(), f"{name}_q25": grouped.quantile(0.25),
+                             f"{name}_q75": grouped.quantile(0.75), n_name: grouped.count()})
+
+    # Every population x marker gets a row, even when one method has no value for it
+    index = pd.MultiIndex.from_product([list(POPULATIONS), list(MARKERS)], names=["population", "marker"])
+    table = pd.concat([summarise(facs_markers, "protein_median", "protein", "n_facs_samples"),
+                       summarise(rna_markers, "rna_mean", "rna", "n_seq_samples")], axis=1).reindex(index)
+    table[["n_facs_samples", "n_seq_samples"]] = table[["n_facs_samples", "n_seq_samples"]].fillna(0).astype(int)
+    table.insert(0, "gene", [MARKERS[m]["gene"] for m in index.get_level_values("marker")])
+    return table.reset_index()
 
 
 def build_imaging(facs, metadata, condition_column):
-    """One row per sample x population x imaging feature (FACS median value)."""
-    rows = []
+    """One row per FACS sample x population x imaging feature (FACS median value)."""
+    parts = []
     # For every population and every S8 imaging feature ...
     for pop, info in POPULATIONS.items():
         for feature in IMAGING_FEATURES:
-            # ... take the "Median (feature)" column of that population's gate
+            # ... take the "Median (feature)" column of that population's gate, one row per sample
             column = MEDIAN_COLUMN.format(gate=info["gate"], parameter=feature)
             values = get_column(facs, column, "the FACS file")
-            # ... and add one row per sample
-            for sample in facs.index:
-                rows.append({SAMPLE_COLUMN: sample, "population": pop,
-                             "feature": feature, "value": values[sample]})
-    table = pd.DataFrame(rows)
-    # Add the condition of each sample as a column
+            parts.append(pd.DataFrame({SAMPLE_COLUMN: facs.index, "population": pop,
+                                       "feature": feature, "value": values.values}))
+    table = pd.concat(parts, ignore_index=True)
+    # Add the condition of each sample as a column (metadata = the FACS samples)
     return table.merge(metadata[[SAMPLE_COLUMN, condition_column]], on=SAMPLE_COLUMN)
 
 
@@ -612,8 +888,42 @@ def correlate(x, y):
     # Only test if there are enough pairs and the values are not all identical
     if len(x) >= MIN_SAMPLES_PER_GROUP and np.std(x) > 0 and np.std(y) > 0:
         result["spearman_r"], result["spearman_p"] = stats.spearmanr(x, y)
+        # scipy's Spearman p-value is an approximation that is far too small for
+        # few pairs (e.g. p = 0 for 4 points in perfect order, where the true
+        # smallest possible p is 2/24 = 0.083). Use the exact p-value instead.
+        if len(x) <= EXACT_SPEARMAN_MAX_N:
+            result["spearman_p"] = exact_spearman_p(x, y)
         result["pearson_r"], result["pearson_p"] = stats.pearsonr(x, y)
     return result
+
+
+EXACT_SPEARMAN_MAX_N = 8   # up to 8 pairs (8! = 40320 orderings) the exact p-value is calculated
+
+
+@functools.lru_cache(maxsize=None)
+def all_orderings(n):
+    """Every possible ordering of n items, as rows of a table (cached: made once per n)."""
+    return np.array(list(itertools.permutations(range(n))))
+
+
+def exact_spearman_p(x, y):
+    """
+    Exact two-sided p-value of the Spearman correlation: the share of ALL possible
+    ways of pairing the y values with the x values that give a correlation at least
+    as strong as the observed one (a permutation test, done completely).
+    """
+    rx, ry = stats.rankdata(x), stats.rankdata(y)
+    rx, ry = rx - rx.mean(), ry - ry.mean()
+    shuffled = ry[all_orderings(len(ry))]                 # one row per possible pairing
+    r_all = shuffled @ rx / (np.sqrt(np.sum(rx ** 2)) * np.sqrt(np.sum(ry ** 2)))
+    r_observed = np.sum(rx * ry) / (np.sqrt(np.sum(rx ** 2)) * np.sqrt(np.sum(ry ** 2)))
+    return float(np.mean(np.abs(r_all) >= abs(r_observed) - 1e-12))
+
+
+def drop_nan(values):
+    """The values as an array of numbers, without the missing ones (NaN)."""
+    values = np.asarray(values, dtype=float)
+    return values[~np.isnan(values)]
 
 
 def compare_groups(values_by_group):
@@ -623,10 +933,8 @@ def compare_groups(values_by_group):
       3+ groups -> Kruskal-Wallis (overall) + every pair with Mann-Whitney U
     Groups with fewer than MIN_SAMPLES_PER_GROUP values are left out.
     """
-    # Remove missing values from every group
-    groups = {name: np.asarray(v, float)[~np.isnan(np.asarray(v, float))]
-              for name, v in values_by_group.items()}
-    # Drop groups that are too small to test
+    # Remove missing values from every group, then drop groups that are too small to test
+    groups = {name: drop_nan(v) for name, v in values_by_group.items()}
     groups = {name: v for name, v in groups.items() if len(v) >= MIN_SAMPLES_PER_GROUP}
     names = list(groups)
     results = []
@@ -651,50 +959,169 @@ def compare_groups(values_by_group):
     return results
 
 
-def method_agreement_stats(proportions):
+def compare_to_reference(values, reference):
     """
-    Section A: do FACS and scRNA-seq give the same proportions?
-      - correlation : do samples rank / scale the same way in both methods?
-      - Wilcoxon    : is one method systematically higher (paired by sample)?
-      - Bland-Altman: average difference (bias) and the range where 95% of
-                      sample differences fall (limits of agreement)
+    UNPAIRED comparison of a group of values with a reference group (different samples).
+      both have >= MIN_SAMPLES_PER_GROUP values -> Mann-Whitney U test
+      only `values` has enough                  -> one-sample Wilcoxon test: are the
+                                                   values centred on the reference
+                                                   (its median, e.g. ONE pooled sample)?
+      only `reference` has enough               -> the same the other way round
+    Returns (test name, statistic, p-value); ("", NaN, NaN) when no test is possible.
+    The test names are generic; the callers translate them for their table.
     """
-    # Reshape so each row has the FACS and the scRNA-seq proportion side by side
-    wide = proportions.pivot_table(index=[SAMPLE_COLUMN, "population"],
-                                   columns="method", values="proportion").reset_index()
-    rows = []
-    for pop in POPULATIONS:
-        # Only samples that have a value from BOTH methods can be paired
-        part = wide[wide["population"] == pop].dropna(subset=["FACS", "scRNA-seq"])
-        facs_values, seq_values = part["FACS"].values, part["scRNA-seq"].values
-        difference = seq_values - facs_values          # positive = seq gives more
-        row = {"population": pop, **correlate(facs_values, seq_values),
-               "mean_FACS": facs_values.mean(), "mean_scRNA-seq": seq_values.mean(),
-               # Bland-Altman: mean difference and mean +/- 1.96 SD
-               "bland_altman_bias": difference.mean(),
-               "bland_altman_lower": difference.mean() - 1.96 * difference.std(ddof=1),
-               "bland_altman_upper": difference.mean() + 1.96 * difference.std(ddof=1),
-               "wilcoxon_stat": np.nan, "wilcoxon_p": np.nan}
-        # Paired Wilcoxon test (needs enough samples and at least one non-zero difference)
-        if len(part) >= MIN_SAMPLES_PER_GROUP and np.any(difference != 0):
-            row["wilcoxon_stat"], row["wilcoxon_p"] = stats.wilcoxon(facs_values, seq_values)
-        rows.append(row)
+    values, reference = drop_nan(values), drop_nan(reference)
+    enough_values = len(values) >= MIN_SAMPLES_PER_GROUP
+    enough_reference = len(reference) >= MIN_SAMPLES_PER_GROUP
+    # Every value the same (e.g. a population that is 0 everywhere): nothing to test
+    if len(values) and len(reference) and np.ptp(np.r_[values, reference]) == 0:
+        return "", np.nan, np.nan
+    if enough_values and enough_reference:
+        statistic, p = stats.mannwhitneyu(values, reference, alternative="two-sided")
+        return "Mann-Whitney U", statistic, p
+    # One side is too small for a group test: use it as a single fixed value
+    if enough_values and len(reference):
+        group, target, test = values, np.median(reference), "Wilcoxon vs reference value"
+    elif enough_reference and len(values):
+        group, target, test = reference, np.median(values), "Wilcoxon of reference vs value"
+    else:
+        return "", np.nan, np.nan
+    # Every value equal to the target: there is no difference to test
+    if not np.any(group != target):
+        return "", np.nan, np.nan
+    statistic, p = stats.wilcoxon(group - target)
+    return test, statistic, p
 
+
+def bootstrap_median_difference(values, reference, rounds=None):
+    """
+    95% interval of median(values) - median(reference), by bootstrap: both groups
+    are resampled (drawn again with replacement) many times, and the middle 95% of
+    the resulting differences is kept. A group of ONE value (e.g. a pool) stays
+    fixed. Only rough with few samples. NaN if a group is empty.
+    """
+    rounds = rounds or BOOTSTRAP_ROUNDS
+    values, reference = drop_nan(values), drop_nan(reference)
+    if len(values) == 0 or len(reference) == 0 or max(len(values), len(reference)) < 2:
+        return np.nan, np.nan
+    rng = np.random.default_rng(0)        # fixed seed: the same interval every run
+
+    def resampled_medians(x):
+        # rounds x len(x) random picks from x -> one median per round
+        return np.median(x[rng.integers(0, len(x), (rounds, len(x)))], axis=1)
+
+    low, high = np.percentile(resampled_medians(values) - resampled_medians(reference), [2.5, 97.5])
+    return low, high
+
+
+# How the generic test names of compare_to_reference() are written in the section A table
+METHOD_TEST_NAMES = {
+    "Wilcoxon vs reference value": "Wilcoxon: scRNA-seq vs single FACS value",
+    "Wilcoxon of reference vs value": "Wilcoxon: FACS vs single scRNA-seq value",
+}
+
+
+def method_comparison_stats(proportions, condition_column, conditions):
+    """
+    Section A: do scRNA-seq and FACS give the same proportions?
+    The two methods measured DIFFERENT samples, so they are compared as groups:
+    every chosen scRNA-seq condition against every chosen FACS condition, for each
+    population (e.g. "Disease (scRNA-seq) vs Healthy pool (FACS)").
+      seq_minus_facs  : median scRNA-seq - median FACS (positive = scRNA-seq finds more)
+      seq_to_facs_ratio: median scRNA-seq / median FACS (2 = twice as much in scRNA-seq)
+      95% interval of the difference by bootstrap
+      test            : see compare_to_reference() (the FACS group is the reference)
+    FDR correction over the whole table.
+    """
+    rows = []
+    for seq_group in conditions["scRNA-seq"]:
+        for facs_group in conditions["FACS"]:
+            for pop in POPULATIONS:
+                part = proportions[proportions["population"] == pop]
+                # The proportions of this population in the two groups of samples
+                seq = drop_nan(part.loc[(part["method"] == "scRNA-seq") &
+                                        (part[condition_column] == seq_group), "proportion"])
+                facs = drop_nan(part.loc[(part["method"] == "FACS") &
+                                         (part[condition_column] == facs_group), "proportion"])
+                median_seq = np.median(seq) if len(seq) else np.nan
+                median_facs = np.median(facs) if len(facs) else np.nan
+                test, statistic, p = compare_to_reference(seq, facs)
+                # The interval only where a test was possible (enough samples)
+                low, high = bootstrap_median_difference(seq, facs) if test else (np.nan, np.nan)
+                rows.append({
+                    "population": pop,
+                    "comparison": f"{seq_group} (scRNA-seq) vs {facs_group} (FACS)",
+                    "seq_group": seq_group, "facs_group": facs_group,
+                    "n_seq": len(seq), "n_facs": len(facs),
+                    "median_seq": median_seq, "median_facs": median_facs,
+                    "seq_minus_facs": median_seq - median_facs,
+                    "seq_minus_facs_ci95_low": low, "seq_minus_facs_ci95_high": high,
+                    "seq_to_facs_ratio": median_seq / median_facs if median_facs > 0 else np.nan,
+                    "test": METHOD_TEST_NAMES.get(test, test), "statistic": statistic, "p_value": p,
+                })
     table = pd.DataFrame(rows)
-    # Correct each kind of p-value for testing several populations
-    for p_col in ["spearman_p", "pearson_p", "wilcoxon_p"]:
-        table[p_col.replace("_p", "_q_fdr")] = fdr_correct(table[p_col])
+    # Correct for all tests in the table, then flag the significant ones
+    table["q_value_fdr"] = fdr_correct(table["p_value"])
+    table["significant"] = table["q_value_fdr"] < ALPHA
     return table
+
+
+def composition_overview(proportions, condition_column, conditions, atlas_props=None):
+    """
+    Section A: the composition of every group side by side - each FACS group (e.g.
+    a pool), each scRNA-seq group and, if given, the reference atlas. One row per
+    group x population with the number of people/samples behind it and the mean,
+    median, 25th-75th percentile, min and max of the proportion.
+    For a single sample (a pool) all of these are simply its own proportion.
+    The means of a group add up to 1, so they can be drawn as one stacked bar (A4).
+    """
+    def describe(values):
+        values = drop_nan(values)
+        if not len(values):
+            return dict.fromkeys(["mean", "median", "q25", "q75", "min", "max"], np.nan)
+        return {"mean": values.mean(), "median": np.median(values),
+                "q25": np.percentile(values, 25), "q75": np.percentile(values, 75),
+                "min": values.min(), "max": values.max()}
+
+    rows = []
+    # FACS groups first (the reference, e.g. the pool), then the scRNA-seq groups
+    for method in ["FACS", "scRNA-seq"]:
+        for group in conditions[method]:
+            part = proportions[(proportions["method"] == method) & (proportions[condition_column] == group)]
+            for pop in POPULATIONS:
+                values = part.loc[part["population"] == pop, "proportion"]
+                rows.append({"source": method, "group": group, "label": f"{group} ({method})",
+                             "population": pop, "n": part[SAMPLE_COLUMN].nunique(), **describe(values)})
+    if atlas_props is not None:
+        pooled = atlas_pooled_proportions(atlas_props)
+        for pop in POPULATIONS:
+            donors = atlas_props.loc[atlas_props["population"] == pop, "proportion"]
+            rows.append({"source": "Atlas", "group": "Reference atlas", "label": "Reference atlas",
+                         "population": pop, "n": atlas_props["donor"].nunique(), **describe(donors),
+                         "atlas_all_cells": pooled[pop]})
+    return pd.DataFrame(rows)
+
+
+def composition_overview_wide(overview):
+    """The overview as a compact table: one row per population, one column per group (mean %)."""
+    wide = overview.pivot_table(index="population", columns="label", values="mean", sort=False) * 100
+    # (order taken from the table itself, so it also works for a table read back from its CSV)
+    wide = wide.reindex(index=list(dict.fromkeys(overview["population"])),
+                        columns=list(dict.fromkeys(overview["label"])))
+    wide.columns = [f"{label} (n={n}), %" for label, n in
+                    overview.drop_duplicates("label").set_index("label")["n"].reindex(wide.columns).items()]
+    return wide.reset_index()
 
 
 def condition_stats(table, value_column, split_columns, condition_column, conditions):
     """
     Section B (and D): for every combination of split_columns (e.g. population x
     method) compare value_column between the selected conditions. FDR correction
-    is applied over the whole table.
+    is applied over the whole table. Conditions are always compared WITHIN one
+    method; a condition without (enough) samples of that method is left out.
     """
     rows = []
-    # Go through each group, e.g. ("Immune", "FACS"), ("Immune", "scRNA-seq"), ...
+    # Go through each group, e.g. ("Neutrophils", "FACS"), ("Neutrophils", "scRNA-seq"), ...
     for keys, part in table.groupby(split_columns, sort=False):
         keys = keys if isinstance(keys, tuple) else (keys,)
         # Collect the values of each condition in this group
@@ -710,20 +1137,29 @@ def condition_stats(table, value_column, split_columns, condition_column, condit
     return result
 
 
+def scale_0_1(values):
+    """Rescale a series from 0 (lowest value) to 1 (highest); all NaN if every value is equal."""
+    low, high = values.min(), values.max()
+    return (values - low) / (high - low) if high > low else values * np.nan
+
+
 def protein_rna_stats(protein_rna):
     """
-    Section C: correlation between protein (FACS) and RNA (scRNA-seq) for each marker,
-    once with all populations pooled and once inside each population.
+    Section C: do the populations come out in the same order for protein (FACS)
+    and RNA (scRNA-seq)? The samples differ between the methods, so this compares
+    the typical level of each POPULATION (from build_protein_vs_rna), not samples.
+      one row per marker   : correlation across the populations (few points:
+                             read r as "same pattern?", the p-value is weak)
+      "All markers (scaled)": every marker first scaled 0-1 across the populations
+                             in each method (the units differ), then all
+                             population x marker points together - one
+                             better-powered answer to "do the patterns match?"
     """
     rows = []
     for marker, part in protein_rna.groupby("marker", sort=False):
-        # All populations together (mostly shows that the marker separates populations)
-        rows.append({"marker": marker, "population": "All populations",
-                     **correlate(part["protein_median"], part["rna_mean"])})
-        # Inside each population (does protein follow RNA between samples?)
-        for pop, sub in part.groupby("population", sort=False):
-            rows.append({"marker": marker, "population": pop,
-                         **correlate(sub["protein_median"], sub["rna_mean"])})
+        rows.append({"marker": marker, **correlate(part["protein_median"], part["rna_median"])})
+    scaled = protein_rna.groupby("marker", sort=False)[["protein_median", "rna_median"]].transform(scale_0_1)
+    rows.append({"marker": "All markers (scaled)", **correlate(scaled["protein_median"], scaled["rna_median"])})
     table = pd.DataFrame(rows)
     # Correct the p-values for all correlations in the table
     table["spearman_q_fdr"] = fdr_correct(table["spearman_p"])
@@ -776,123 +1212,193 @@ def save(fig, name):
     print(f"  saved {name}")
 
 
+def ordered_samples(table, method, condition_column, conditions):
+    """The samples of one method, sorted by condition (in the chosen order), then by sample ID."""
+    samples = table.loc[table["method"] == method, [SAMPLE_COLUMN, condition_column]].drop_duplicates()
+    rank = samples[condition_column].map({c: i for i, c in enumerate(conditions)})
+    return samples.assign(_rank=rank).sort_values(["_rank", SAMPLE_COLUMN]).drop(columns="_rank")
+
+
+def method_label(method):
+    """Short method name for crowded axis labels."""
+    return "seq" if method == "scRNA-seq" else method
+
+
 def plot_stacked_proportions(proportions, condition_column, conditions):
-    """Stacked bars: each sample gets a FACS bar and a scRNA-seq bar side by side."""
-    # Order samples by condition (in the order chosen), then by sample ID
-    order = (proportions[[SAMPLE_COLUMN, condition_column]].drop_duplicates()
-             .assign(_c=lambda d: d[condition_column].map(conditions.index))
-             .sort_values(["_c", SAMPLE_COLUMN]))
-    samples = list(order[SAMPLE_COLUMN])
-    # Table: rows = (sample, method), columns = populations, values = proportions
-    wide = proportions.pivot_table(index=[SAMPLE_COLUMN, "method"], columns="population",
-                                   values="proportion")
+    """Stacked bars, one per person/sample: the scRNA-seq people first, then the FACS samples."""
+    # Table: rows = (method, sample), columns = populations, values = proportions
+    wide = (proportions.pivot_table(index=["method", SAMPLE_COLUMN], columns="population", values="proportion")
+            .reindex(columns=list(POPULATIONS)))
+    keys, positions, labels, blocks = [], [], [], []
+    x = 0
+    for method in METHODS:
+        order = ordered_samples(proportions, method, condition_column, conditions[method])
+        start = x
+        for sample, condition in zip(order[SAMPLE_COLUMN], order[condition_column]):
+            keys.append((method, sample))
+            positions.append(x)
+            labels.append(f"{sample} · {condition}")
+            x += 1
+        blocks.append((method, start, x - 1))
+        x += 1                                  # a gap between the two methods
+    values = wide.reindex(pd.MultiIndex.from_tuples(keys)).fillna(0)
 
     # Figure gets wider when there are more samples
-    fig, ax = plt.subplots(figsize=(max(6, len(samples) * 0.9), 4.5))
-    positions, labels = [], []
-    for i, sample in enumerate(samples):
-        for j, method in enumerate(["FACS", "scRNA-seq"]):
-            x = i * 3 + j          # two bars per sample, then a gap
-            bottom = 0
-            # Stack the populations on top of each other
-            for pop in POPULATIONS:
-                value = wide.loc[(sample, method), pop] if (sample, method) in wide.index else 0
-                ax.bar(x, value, bottom=bottom, width=0.85, color=population_color(pop),
-                       edgecolor="white", linewidth=1, label=pop if (i == 0 and j == 0) else None)
-                bottom += value
-            positions.append(x)
-            labels.append(f"{sample} · {'FACS' if method == 'FACS' else 'seq'}")
-    # Axis labels, title and legend
+    fig, ax = plt.subplots(figsize=(max(6, len(keys) * 0.45 + 2.5), 4.8))
+    bottom = np.zeros(len(keys))
+    # One call per population draws that population's block in every bar (stacked on the previous ones)
+    for pop in POPULATIONS:
+        ax.bar(positions, values[pop].values, bottom=bottom, width=0.85, color=population_color(pop),
+               edgecolor="white", linewidth=1, label=pop)
+        bottom += values[pop].values
+    # Name the two blocks of bars above the plot
+    for method, start, end in blocks:
+        if end >= start:
+            ax.text((start + end) / 2, 1.02, method, transform=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontweight="bold")
     ax.set_xticks(positions, labels, rotation=90)
     ax.set_ylabel("Proportion of cells")
-    ax.set_title("Cell-type proportions per sample (FACS vs scRNA-seq)", loc="left")
+    ax.set_title("Cell-type proportions per person (scRNA-seq) and per sample (FACS)", loc="left", pad=18)
     ax.grid(axis="x", visible=False)
     ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
     save(fig, "A1_proportions_stacked.png")
 
 
-def plot_method_scatter(proportions, agreement):
-    """One panel per population: FACS proportion (x) vs scRNA-seq proportion (y)."""
-    # FACS and scRNA-seq proportions side by side for each sample and population
-    wide = proportions.pivot_table(index=[SAMPLE_COLUMN, "population"],
-                                   columns="method", values="proportion").reset_index()
-    fig, axes = plt.subplots(1, len(POPULATIONS), figsize=(4 * len(POPULATIONS), 4))
-    for ax, pop in zip(np.atleast_1d(axes), POPULATIONS):
-        part = wide[wide["population"] == pop]
-        # One dot per sample
-        ax.scatter(part["FACS"], part["scRNA-seq"], s=45, color=population_color(pop),
-                   edgecolor="white", linewidth=1.5, zorder=3)
-        # Dashed diagonal: where the dots would be if both methods agreed perfectly
-        limit = np.nanmax(part[["FACS", "scRNA-seq"]].values) * 1.1
-        ax.plot([0, limit], [0, limit], color="#8a8984", linewidth=1, linestyle="--", label="identity (x = y)")
-        ax.set_xlim(0, limit)
-        ax.set_ylim(0, limit)
-        # Write the correlation from section A in the title
-        row = agreement[agreement["population"] == pop].iloc[0]
-        ax.set_title(f"{pop}\nSpearman r = {row['spearman_r']:.2f}, q = {row['spearman_q_fdr']:.3g}",
-                     loc="left")
-        ax.set_xlabel("FACS proportion")
-        ax.set_ylabel("scRNA-seq proportion")
-    np.atleast_1d(axes)[0].legend(loc="upper left")
-    save(fig, "A2_proportions_FACS_vs_seq.png")
+def method_groups(conditions):
+    """The boxes of plot A2, left to right: (method, condition), scRNA-seq conditions first."""
+    return [(method, c) for method in METHODS for c in conditions[method]]
 
 
-def plot_bland_altman(proportions, agreement):
+def plot_method_boxes(proportions, condition_column, conditions):
     """
-    Bland-Altman: x = mean of the two methods, y = difference (seq - FACS).
-    Points around 0 = agreement; the dashed lines = 95% limits of agreement.
+    A2: one panel per population. One box per scRNA-seq condition and per FACS
+    condition; every dot is one sample (a pool is a single dot).
     """
-    # FACS and scRNA-seq proportions side by side for each sample and population
-    wide = proportions.pivot_table(index=[SAMPLE_COLUMN, "population"],
-                                   columns="method", values="proportion").reset_index()
-    fig, axes = plt.subplots(1, len(POPULATIONS), figsize=(4 * len(POPULATIONS), 3.8))
+    groups = method_groups(conditions)
+    fig, axes = plt.subplots(1, len(POPULATIONS), figsize=(max(3.4, 0.9 * len(groups) + 1.2) * len(POPULATIONS), 4))
     for ax, pop in zip(np.atleast_1d(axes), POPULATIONS):
-        part = wide[wide["population"] == pop]
-        mean = (part["FACS"] + part["scRNA-seq"]) / 2     # x: average of the two methods
-        diff = part["scRNA-seq"] - part["FACS"]           # y: how much they differ
-        ax.scatter(mean, diff, s=45, color=population_color(pop), edgecolor="white", linewidth=1.5, zorder=3)
-        row = agreement[agreement["population"] == pop].iloc[0]
-        ax.axhline(0, color="#8a8984", linewidth=1)                               # zero line
-        ax.axhline(row["bland_altman_bias"], color="#0b0b0b", linewidth=1.2)      # bias line
-        for limit in ["bland_altman_lower", "bland_altman_upper"]:                # limits of agreement
-            ax.axhline(row[limit], color="#52514e", linewidth=1, linestyle="--")
-        ax.set_title(f"{pop}\nbias = {row['bland_altman_bias']:+.3f}", loc="left")
-        ax.set_xlabel("Mean proportion (FACS + seq) / 2")
-        ax.set_ylabel("scRNA-seq − FACS")
-    save(fig, "A3_bland_altman.png")
+        part = proportions[proportions["population"] == pop]
+        for i, (method, condition) in enumerate(groups):
+            values = part.loc[(part["method"] == method) & (part[condition_column] == condition), "proportion"]
+            boxplot_with_points(ax, [values], [i], METHOD_COLORS[method], width=0.5)
+        ax.set_xticks(range(len(groups)), [f"{c}\n({method_label(m)})" for m, c in groups])
+        ax.set_title(pop, loc="left")
+        ax.set_ylabel("Proportion of cells")
+    # Legend entries for the two method colors
+    last = np.atleast_1d(axes)[-1]
+    for method in METHODS:
+        last.scatter([], [], color=METHOD_COLORS[method], s=22, label=method)
+    last.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    save(fig, "A2_proportions_by_method.png")
+
+
+def plot_method_difference(comparison):
+    """
+    A3: one panel per comparison (scRNA-seq group vs FACS group). Each row is a
+    population: the dot is median scRNA-seq - median FACS, the line its bootstrap
+    95% interval. Dots right of 0 = scRNA-seq finds more of that population.
+    """
+    comparisons = list(dict.fromkeys(comparison["comparison"]))
+    pops = list(POPULATIONS)
+    fig, axes = plt.subplots(1, len(comparisons), figsize=(4.4 * len(comparisons) + 1.2, 0.55 * len(pops) + 1.8),
+                             squeeze=False, sharex=True)
+    for k, (ax, name) in enumerate(zip(axes[0], comparisons)):
+        part = comparison[comparison["comparison"] == name].set_index("population").reindex(pops)
+        for i, pop in enumerate(pops):
+            row, y = part.loc[pop], len(pops) - 1 - i          # first population at the top
+            if np.isnan(row["seq_minus_facs"]):
+                continue
+            color = population_color(pop)
+            if np.isfinite(row["seq_minus_facs_ci95_low"]):
+                ax.plot([row["seq_minus_facs_ci95_low"], row["seq_minus_facs_ci95_high"]], [y, y],
+                        color=color, linewidth=2, solid_capstyle="round")
+            ax.scatter(row["seq_minus_facs"], y, s=50, color=color, edgecolor="white", linewidth=1.2, zorder=3)
+            # The FDR q-value just outside the right edge of the panel (never on top of a line)
+            q = row["q_value_fdr"]
+            ax.text(1.02, y, "no test" if np.isnan(q) else f"q = {q:.2g}", transform=ax.get_yaxis_transform(),
+                    ha="left", va="center", fontsize=7, color="#52514e")
+        ax.axvline(0, color="#8a8984", linewidth=1, linestyle="--")
+        ax.set_ylim(-0.6, len(pops) - 0.4)
+        ax.set_yticks(range(len(pops)), pops[::-1] if k == 0 else [])
+        ax.set_title(name.replace(" vs ", "\nvs "), loc="left")
+        ax.set_xlabel("Median scRNA-seq − median FACS")
+    save(fig, "A3_method_difference.png")
+
+
+def plot_composition_overview(overview):
+    """
+    A4: one stacked bar per group - the FACS groups (e.g. the pool), the scRNA-seq
+    groups and the reference atlas - showing the average proportion of each
+    population, with the percentage written in each block.
+    """
+    labels = list(dict.fromkeys(overview["label"]))
+    n_of = overview.drop_duplicates("label").set_index("label")["n"]
+    source_of = overview.drop_duplicates("label").set_index("label")["source"]
+    unit = {"FACS": "sample", "scRNA-seq": "people", "Atlas": "donors"}
+    fig, ax = plt.subplots(figsize=(max(5, 1.5 * len(labels) + 2.5), 4.8))
+    bottom = np.zeros(len(labels))
+    for pop in POPULATIONS:
+        part = overview[overview["population"] == pop].set_index("label")["mean"].reindex(labels).fillna(0).values
+        ax.bar(range(len(labels)), part, bottom=bottom, width=0.7, color=population_color(pop),
+               edgecolor="white", linewidth=1, label=pop)
+        # The percentage inside the block (only when there is room for it)
+        for x, (value, start) in enumerate(zip(part, bottom)):
+            if value >= 0.04:
+                ax.text(x, start + value / 2, f"{100 * value:.0f}%", ha="center", va="center",
+                        fontsize=8, color="white", fontweight="bold")
+        bottom += part
+    names = []
+    for label in labels:
+        n = int(n_of[label])
+        what = "sample" if source_of[label] == "FACS" and n == 1 else ("samples" if source_of[label] == "FACS"
+                                                                       else unit[source_of[label]])
+        names.append(f"{label.replace(' (', chr(10) + '(')}\nn = {n} {what}")
+    ax.set_xticks(range(len(labels)), names)
+    ax.set_ylabel("Average proportion of cells")
+    ax.set_ylim(0, 1)
+    ax.set_title("Composition overview: FACS, scRNA-seq and reference atlas", loc="left")
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    save(fig, "A4_composition_overview.png")
 
 
 def boxplot_with_points(ax, data_by_x, positions, color, width=0.35):
-    """Draw thin box plots with every sample shown as a dot on top."""
+    """Draw thin box plots with every sample shown as a dot on top (empty groups are skipped)."""
     # Fixed random seed so the dot jitter looks the same every run
     rng = np.random.default_rng(0)
-    for values, x in zip(data_by_x, positions):
-        # Remove missing values; skip empty groups
-        values = np.asarray(values, float)
-        values = values[~np.isnan(values)]
-        if len(values) == 0:
-            continue
-        # The box (median and quartiles), without separate outlier markers
-        ax.boxplot(values, positions=[x], widths=width, showfliers=False,
-                   boxprops={"color": color, "linewidth": 1.2},
-                   whiskerprops={"color": color}, capprops={"color": color},
-                   medianprops={"color": "#0b0b0b", "linewidth": 1.5})
-        # The individual samples, shifted a little sideways so they don't overlap
-        jitter = rng.uniform(-width / 4, width / 4, len(values))
-        ax.scatter(x + jitter, values, s=22, color=color, edgecolor="white", linewidth=1, zorder=3)
+    # Remove missing values; skip empty groups
+    groups = [(drop_nan(values), x) for values, x in zip(data_by_x, positions)]
+    groups = [(values, x) for values, x in groups if len(values)]
+    if not groups:
+        return
+    # All boxes in ONE call (median and quartiles, no separate outlier markers):
+    # much faster than one call per box when a figure has many boxes
+    ax.boxplot([values for values, _ in groups], positions=[x for _, x in groups], widths=width,
+               showfliers=False, manage_ticks=False,
+               boxprops={"color": color, "linewidth": 1.2},
+               whiskerprops={"color": color}, capprops={"color": color},
+               medianprops={"color": "#0b0b0b", "linewidth": 1.5})
+    # The individual samples, shifted a little sideways so they don't overlap (one call for all dots)
+    xs = np.concatenate([x + rng.uniform(-width / 4, width / 4, len(values)) for values, x in groups])
+    ys = np.concatenate([values for values, _ in groups])
+    ax.scatter(xs, ys, s=22, color=color, edgecolor="white", linewidth=1, zorder=3)
 
 
 def plot_proportions_by_condition(proportions, condition_column, conditions):
-    """One panel per population: proportions per condition, FACS and scRNA-seq side by side."""
+    """
+    B1: one panel per population: proportions per condition, scRNA-seq and FACS
+    side by side. conditions = all chosen conditions of both methods (one list);
+    a method without samples in a condition simply has no box there.
+    """
     fig, axes = plt.subplots(1, len(POPULATIONS),
                              figsize=(max(4, 1.6 * len(conditions)) * len(POPULATIONS) / 1.3, 4))
     for ax, pop in zip(np.atleast_1d(axes), POPULATIONS):
         part = proportions[proportions["population"] == pop]
-        for k, method in enumerate(["FACS", "scRNA-seq"]):
+        for k, method in enumerate(METHODS):
             # One list of proportions per condition, for this method
             data = [part[(part["method"] == method) & (part[condition_column] == c)]["proportion"]
                     for c in conditions]
-            # FACS box slightly left, scRNA-seq box slightly right of each condition
+            # scRNA-seq box slightly left, FACS box slightly right of each condition
             positions = [i + (k - 0.5) * 0.4 for i in range(len(conditions))]
             boxplot_with_points(ax, data, positions, METHOD_COLORS[method])
             ax.scatter([], [], color=METHOD_COLORS[method], s=22, label=method)  # legend entry
@@ -904,28 +1410,36 @@ def plot_proportions_by_condition(proportions, condition_column, conditions):
 
 
 def plot_protein_vs_rna(protein_rna, rna_stats):
-    """One panel per marker: FACS median intensity vs mean RNA, colored by population."""
+    """
+    C1: one panel per marker. Each dot is one population: x = typical RNA of the
+    gene (scRNA-seq samples), y = typical protein (FACS samples); the lines show
+    the 25th-75th percentile over the samples of each method.
+    """
     fig, axes = plt.subplots(1, len(MARKERS), figsize=(3.6 * len(MARKERS), 3.8))
     for ax, (marker, info) in zip(np.atleast_1d(axes), MARKERS.items()):
         part = protein_rna[protein_rna["marker"] == marker]
-        # One dot per sample, colored by population
         for pop in POPULATIONS:
-            sub = part[part["population"] == pop]
-            ax.scatter(sub["rna_mean"], sub["protein_median"], s=40, color=population_color(pop),
+            row = part[part["population"] == pop].iloc[0]
+            if np.isnan(row["rna_median"]) or np.isnan(row["protein_median"]):
+                continue
+            color = population_color(pop)
+            # Spread over the samples of each method (25th-75th percentile)
+            ax.plot([row["rna_q25"], row["rna_q75"]], [row["protein_median"]] * 2, color=color, linewidth=1.2)
+            ax.plot([row["rna_median"]] * 2, [row["protein_q25"], row["protein_q75"]], color=color, linewidth=1.2)
+            ax.scatter(row["rna_median"], row["protein_median"], s=50, color=color,
                        edgecolor="white", linewidth=1.5, label=pop, zorder=3)
-        # Show the pooled ("All populations") correlation from section C in the title
-        row = rna_stats[(rna_stats["marker"] == marker) &
-                        (rna_stats["population"] == "All populations")].iloc[0]
-        ax.set_title(f"{marker} protein vs {info['gene']} RNA\nSpearman r = {row['spearman_r']:.2f}",
+        # The correlation across populations from section C in the title
+        stat = rna_stats[rna_stats["marker"] == marker].iloc[0]
+        ax.set_title(f"{marker} protein vs {info['gene']} RNA\nSpearman r = {stat['spearman_r']:.2f}",
                      loc="left")
-        ax.set_xlabel(f"{info['gene']} mean expression (log-norm)")
+        ax.set_xlabel(f"{info['gene']} expression (scRNA-seq)")
         ax.set_ylabel(f"{marker} median intensity (FACS)")
     np.atleast_1d(axes)[-1].legend(loc="upper left", bbox_to_anchor=(1, 1))
     save(fig, "C1_protein_vs_rna.png")
 
 
 def plot_imaging(imaging, condition_column, conditions):
-    """Grid: one row per imaging feature, one column per population, x = condition."""
+    """Grid: one row per imaging feature, one column per population, x = FACS condition."""
     n_rows, n_cols = len(IMAGING_FEATURES), len(POPULATIONS)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.6 * n_cols, 2.8 * n_rows), squeeze=False)
     for r, feature in enumerate(IMAGING_FEATURES):
@@ -955,6 +1469,8 @@ def plot_imaging(imaging, condition_column, conditions):
 # dataset of urine. If our FACS and Flex results look like the atlas, that
 # supports our gating and annotation; where they differ, it shows either a
 # biological effect (e.g. a disease condition) or a technical bias of a method.
+# This is also useful when FACS and scRNA-seq measured different people: the
+# atlas is a third, shared reference for both.
 
 ATLAS_SOURCES = ["Atlas RNA", "Flex RNA", "FACS protein"]   # the three panels of plot E3
 
@@ -966,11 +1482,15 @@ def load_atlas(path):
     Adds a "cells_in_row" column: 1 per row for a per-cell file, or the number from
     ATLAS_COUNT_COLUMN for a summary table. Labels not listed become 'Other'.
     """
-    # Read the file; cell types and donors stay text
-    atlas = pd.read_csv(path, dtype={ATLAS_CELL_TYPE_COLUMN: str, ATLAS_DONOR_COLUMN: str})
+    # Read only the columns that are used (a published atlas can have many more);
+    # cell types and donors stay text
+    needed = {ATLAS_CELL_TYPE_COLUMN, ATLAS_DONOR_COLUMN, ATLAS_COUNT_COLUMN,
+              *(m["gene"] for m in MARKERS.values())}
+    atlas = pd.read_csv(path, dtype={ATLAS_CELL_TYPE_COLUMN: str, ATLAS_DONOR_COLUMN: str},
+                        usecols=lambda c: c in needed)
     get_column(atlas, ATLAS_CELL_TYPE_COLUMN, path.name)
 
-    # Dictionary: atlas label -> population, e.g. "Myeloid cell" -> "Immune"
+    # Dictionary: atlas label -> population, e.g. "Myeloid cell" -> "Other immune"
     label_to_population = {
         label: population
         for population, info in POPULATIONS.items()
@@ -1034,45 +1554,51 @@ def atlas_pooled_proportions(atlas_props):
     return (sums["count"] / sums["total"].where(sums["total"] > 0)).reindex(list(POPULATIONS))
 
 
+# How the generic test names of compare_to_reference() are written in the section E table
+ATLAS_TEST_NAMES = {
+    "Mann-Whitney U": "Mann-Whitney U vs atlas donors",
+    "Wilcoxon vs reference value": "Wilcoxon vs atlas proportion",
+    "Wilcoxon of reference vs value": "Wilcoxon of atlas donors vs sample value",
+}
+
+
 def atlas_comparison_stats(proportions, atlas_props, condition_column, conditions):
     """
-    Section E: for every population x method x condition, compare our sample
-    proportions with the atlas.
-      - atlas with >= MIN_SAMPLES_PER_GROUP donors:
+    Section E: for every population x method x condition (the conditions chosen
+    for that method), compare our sample proportions with the atlas
+    (compare_to_reference, with the atlas as the reference):
+      - >= MIN_SAMPLES_PER_GROUP samples AND atlas donors:
             Mann-Whitney U test, our samples vs the atlas donors
             (takes into account that healthy people also differ from each other)
-      - otherwise (atlas without donors, or too few):
+      - enough samples, but an atlas without donors (or too few):
             one-sample Wilcoxon test: are our samples centred on the atlas proportion?
+      - a single sample (e.g. a FACS pool) and enough atlas donors:
+            one-sample Wilcoxon test: are the atlas donors centred on that sample's value?
     FDR correction is applied over the whole table.
+    conditions = {"scRNA-seq": [...], "FACS": [...]}
     """
     pooled = atlas_pooled_proportions(atlas_props)
     rows = []
     for pop in POPULATIONS:
         # The proportion of this population in every atlas donor
         donors = atlas_props.loc[atlas_props["population"] == pop, "proportion"].dropna().values
-        for method in ["FACS", "scRNA-seq"]:
-            for group in conditions:
+        # The reference: the donors when there are enough of them, otherwise the pooled atlas value
+        reference = donors if len(donors) >= MIN_SAMPLES_PER_GROUP else [pooled[pop]]
+        for method in METHODS:
+            for group in conditions[method]:
                 # Our samples of this method and condition
                 values = proportions.loc[(proportions["population"] == pop) &
                                          (proportions["method"] == method) &
                                          (proportions[condition_column] == group), "proportion"].dropna().values
                 median = np.median(values) if len(values) else np.nan
-                row = {"population": pop, "method": method, "group": group,
-                       "n_samples": len(values), "median_samples": median,
-                       "atlas_proportion": pooled[pop],
-                       "atlas_donor_median": np.median(donors) if len(donors) else np.nan,
-                       "difference": median - pooled[pop],       # positive = more than in the atlas
-                       "n_atlas_donors": len(donors),
-                       "test": "", "statistic": np.nan, "p_value": np.nan}
-                # Choose the test depending on how many atlas donors there are
-                if len(donors) >= MIN_SAMPLES_PER_GROUP and len(values) >= MIN_SAMPLES_PER_GROUP:
-                    row["test"] = "Mann-Whitney U vs atlas donors"
-                    row["statistic"], row["p_value"] = stats.mannwhitneyu(values, donors, alternative="two-sided")
-                elif (len(values) >= MIN_SAMPLES_PER_GROUP and not np.isnan(pooled[pop])
-                      and np.any(values != pooled[pop])):
-                    row["test"] = "Wilcoxon vs atlas proportion"
-                    row["statistic"], row["p_value"] = stats.wilcoxon(values - pooled[pop])
-                rows.append(row)
+                test, statistic, p = compare_to_reference(values, reference)
+                rows.append({"population": pop, "method": method, "group": group,
+                             "n_samples": len(values), "median_samples": median,
+                             "atlas_proportion": pooled[pop],
+                             "atlas_donor_median": np.median(donors) if len(donors) else np.nan,
+                             "difference": median - pooled[pop],       # positive = more than in the atlas
+                             "n_atlas_donors": len(donors),
+                             "test": ATLAS_TEST_NAMES.get(test, test), "statistic": statistic, "p_value": p})
     table = pd.DataFrame(rows)
     # Correct for all tests in the table, then flag the significant ones
     table["q_value_fdr"] = fdr_correct(table["p_value"])
@@ -1106,12 +1632,12 @@ def composition_difference(proportions, atlas_props, condition_column):
     return pd.DataFrame(rows)
 
 
-def build_marker_profiles(atlas, cells, protein_rna):
+def build_marker_profiles(atlas, cells, facs_markers):
     """
     Section E: the typical level of each marker in each population, from three sources:
       Atlas RNA    : mean expression of the gene in the atlas cells
       Flex RNA     : mean expression of the gene in our sequenced cells
-      FACS protein : median (over samples) of the antibody's median intensity
+      FACS protein : median (over FACS samples) of the antibody's median intensity
     The three sources use different units, so inside each source every marker is
     scaled 0-1 across the populations (0 = lowest population, 1 = highest).
     Only the PATTERN is compared: which population is high or low for a marker.
@@ -1126,8 +1652,8 @@ def build_marker_profiles(atlas, cells, protein_rna):
     # Average gene expression per population in the atlas and in our Flex data
     atlas_means = atlas[atlas["population"].isin(populations)].groupby("population")[genes].mean()
     seq_means = cells[cells["population"].isin(populations)].groupby("population")[genes].mean()
-    # Typical FACS intensity per population and marker (median over samples)
-    facs_medians = protein_rna.groupby(["population", "marker"])["protein_median"].median()
+    # Typical FACS intensity per population and marker (median over FACS samples)
+    facs_medians = facs_markers.groupby(["population", "marker"])["protein_median"].median()
 
     rows = []
     for marker, info in MARKERS.items():
@@ -1147,9 +1673,9 @@ def build_marker_profiles(atlas, cells, protein_rna):
 
 def plot_atlas_proportions(proportions, atlas_props, condition_column, conditions):
     """
-    E1: one panel per population. Our samples per condition (FACS and scRNA-seq
+    E1: one panel per population. Our samples per condition (scRNA-seq and FACS
     boxes, as in B1), the atlas donors as an extra box, and a dashed line at the
-    pooled atlas proportion.
+    pooled atlas proportion. conditions = all chosen conditions of both methods.
     """
     pooled = atlas_pooled_proportions(atlas_props)
     has_donors = atlas_props["donor"].nunique() > 1
@@ -1158,8 +1684,8 @@ def plot_atlas_proportions(proportions, atlas_props, condition_column, condition
                              figsize=(max(4, 1.6 * len(groups)) * len(POPULATIONS) / 1.3, 4))
     for ax, pop in zip(np.atleast_1d(axes), POPULATIONS):
         part = proportions[proportions["population"] == pop]
-        # Our samples: FACS box slightly left, scRNA-seq box slightly right of each condition
-        for k, method in enumerate(["FACS", "scRNA-seq"]):
+        # Our samples: scRNA-seq box slightly left, FACS box slightly right of each condition
+        for k, method in enumerate(METHODS):
             data = [part[(part["method"] == method) & (part[condition_column] == c)]["proportion"]
                     for c in conditions]
             positions = [i + (k - 0.5) * 0.4 for i in range(len(conditions))]
@@ -1182,8 +1708,8 @@ def plot_atlas_proportions(proportions, atlas_props, condition_column, condition
 def plot_atlas_difference(differences, conditions):
     """E2: composition difference from the atlas per sample (in %), per condition and method."""
     fig, ax = plt.subplots(figsize=(max(5, 1.8 * (len(conditions) + 1)), 4))
-    # Our samples, FACS and scRNA-seq side by side for each condition
-    for k, method in enumerate(["FACS", "scRNA-seq"]):
+    # Our samples, scRNA-seq and FACS side by side for each condition
+    for k, method in enumerate(METHODS):
         data = [differences[(differences["method"] == method) &
                             (differences["group"] == c)]["composition_difference"] * 100
                 for c in conditions]
@@ -1241,16 +1767,15 @@ def plot_marker_profiles(profiles):
     save(fig, "E3_atlas_marker_profiles.png")
 
 
-def run_atlas_comparison(atlas_path, proportions, cells, protein_rna, condition_column, conditions):
+def run_atlas_comparison(atlas, atlas_props, proportions, cells, facs_markers, condition_column, conditions):
     """
-    Section E from start to end: load the atlas, build the tables, run the
-    statistics, save the tables and draw the plots. Returns the test table.
+    Section E from start to end (the atlas is loaded in run_analysis, because the
+    composition overview of section A also uses it): run the statistics, save the
+    tables and draw the plots. Returns the test table.
     """
-    atlas = load_atlas(atlas_path)
-    atlas_props = build_atlas_proportions(atlas)
     tests = atlas_comparison_stats(proportions, atlas_props, condition_column, conditions)
     differences = composition_difference(proportions, atlas_props, condition_column)
-    profiles = build_marker_profiles(atlas, cells, protein_rna)
+    profiles = build_marker_profiles(atlas, cells, facs_markers)
 
     # Tables
     atlas_props.to_csv(OUTPUT_DIR / "E_atlas_proportions.csv", index=False)
@@ -1260,8 +1785,8 @@ def run_atlas_comparison(atlas_path, proportions, cells, protein_rna, condition_
         profiles.to_csv(OUTPUT_DIR / "E_atlas_marker_profiles.csv", index=False)
 
     # Plots
-    plot_atlas_proportions(proportions, atlas_props, condition_column, conditions)
-    plot_atlas_difference(differences, conditions)
+    plot_atlas_proportions(proportions, atlas_props, condition_column, all_conditions(conditions))
+    plot_atlas_difference(differences, all_conditions(conditions))
     if profiles is not None:
         plot_marker_profiles(profiles)
     return tests
@@ -1272,7 +1797,8 @@ def run_atlas_comparison(atlas_path, proportions, cells, protein_rna, condition_
 # =============================================================================
 # Everything for section F is in this block. It describes each population with
 # all the S8 imaging features at once: typical values, a "fingerprint", a PCA
-# map, outliers, and links between shape and marker intensity. Sections A-E do
+# map, outliers, and links between shape and marker intensity. It only uses the
+# FACS samples (imaging comes from the S8). Sections A-E do
 # not use anything from here.
 #
 # Two levels of data:
@@ -1372,26 +1898,25 @@ def imaging_pca(imaging, condition_column):
     return scores, loadings
 
 
-def imaging_marker_correlations(imaging, protein_rna):
+def imaging_marker_correlations(imaging, facs_markers):
     """
-    Inside each population: across samples, does an imaging feature go together
+    Inside each population: across FACS samples, does an imaging feature go together
     with a marker's FACS intensity? (e.g. do larger proximal tubule cells carry
     more CD13?) Spearman correlation for every population x feature x marker,
-    FDR-corrected over the whole table.
+    FDR-corrected over the whole table. (Both come from the same FACS samples.)
     """
-    protein = protein_rna[[SAMPLE_COLUMN, "population", "marker", "protein_median"]]
+    # Pair the two measurements of the same sample and population, once for the whole table
+    both = imaging.merge(facs_markers[[SAMPLE_COLUMN, "population", "marker", "protein_median"]],
+                         on=[SAMPLE_COLUMN, "population"])
+    pairs = dict(iter(both.groupby(["population", "feature", "marker"], sort=False)))
+    no_pairs = both.iloc[:0]
     rows = []
     for pop in POPULATIONS:
         for feature in IMAGING_FEATURES:
-            image_values = imaging[(imaging["population"] == pop) &
-                                   (imaging["feature"] == feature)][[SAMPLE_COLUMN, "value"]]
             for marker in MARKERS:
-                marker_values = protein[(protein["population"] == pop) &
-                                        (protein["marker"] == marker)][[SAMPLE_COLUMN, "protein_median"]]
-                # Pair the two measurements of the same sample
-                both = image_values.merge(marker_values, on=SAMPLE_COLUMN)
+                part = pairs.get((pop, feature, marker), no_pairs)
                 rows.append({"population": pop, "feature": feature, "marker": marker,
-                             **correlate(both["value"], both["protein_median"])})
+                             **correlate(part["value"], part["protein_median"])})
     table = pd.DataFrame(rows)
     table["spearman_q_fdr"] = fdr_correct(table["spearman_p"])
     return table
@@ -1402,8 +1927,12 @@ def load_facs_cells(path, metadata, condition_column):
     Read the optional per-cell imaging export. Each cell gets its sample_id
     (directly, or translated from facs_name) and the condition of its sample.
     Only cells of known populations and of the chosen samples are kept.
+    metadata = the FACS rows of the sample sheet.
     """
-    cells_img = pd.read_csv(path, dtype={SAMPLE_COLUMN: str, FACS_NAME_COLUMN: str})
+    # Read only the columns that are used (a FlowJo export has many more channels)
+    needed = {SAMPLE_COLUMN, FACS_NAME_COLUMN, FACS_CELLS_POPULATION_COLUMN, *IMAGING_FEATURES}
+    cells_img = pd.read_csv(path, dtype={SAMPLE_COLUMN: str, FACS_NAME_COLUMN: str},
+                            usecols=lambda c: c in needed)
     # Which sample is each cell from? Use sample_id, or translate facs_name via the metadata
     if SAMPLE_COLUMN not in cells_img.columns:
         if FACS_NAME_COLUMN not in cells_img.columns:
@@ -1448,25 +1977,28 @@ def cell_level_summary(cells_img, flags, condition_column):
     number of cells, mean, median, SD, CV%, 5th and 95th percentile, and the
     % of outlier cells. Extra rows with feature 'Any feature' give the % of
     cells that are an outlier in at least one feature.
+    Calculated per feature for all groups at once (fast also for millions of cells).
     """
-    rows = []
-    for (sample, pop, group), part in cells_img.groupby([SAMPLE_COLUMN, "population", condition_column], sort=False):
-        for feature in IMAGING_FEATURES:
-            values = part[feature].dropna()
-            mean = values.mean() if len(values) else np.nan
-            sd = values.std(ddof=1) if len(values) > 1 else np.nan
-            rows.append({
-                SAMPLE_COLUMN: sample, "population": pop, condition_column: group, "feature": feature,
-                "n_cells": len(values), "mean": mean, "median": values.median(), "sd": sd,
-                "cv_percent": 100 * sd / mean if mean else np.nan,
-                "p5": values.quantile(0.05), "p95": values.quantile(0.95),   # the middle 90% of cells
-                "pct_outlier_cells": 100 * flags.loc[part.index, feature].mean(),
-            })
-        # Cells that are unusual in at least one feature
-        rows.append({SAMPLE_COLUMN: sample, "population": pop, condition_column: group,
-                     "feature": "Any feature", "n_cells": len(part),
-                     "pct_outlier_cells": 100 * flags.loc[part.index, "Any feature"].mean()})
-    return pd.DataFrame(rows)
+    keys = [SAMPLE_COLUMN, "population", condition_column]
+    grouped = cells_img.groupby(keys, sort=False)
+    # The outlier flags grouped the same way (flags has the same rows as cells_img)
+    flag_groups = flags.groupby([cells_img[k] for k in keys], sort=False)
+    parts = []
+    for feature in IMAGING_FEATURES:
+        values = grouped[feature]
+        part = pd.DataFrame({"n_cells": values.count(), "mean": values.mean(), "median": values.median(),
+                             "sd": values.std(ddof=1),
+                             "p5": values.quantile(0.05), "p95": values.quantile(0.95),   # the middle 90% of cells
+                             "pct_outlier_cells": 100 * flag_groups[feature].mean()})
+        part["cv_percent"] = 100 * part["sd"] / part["mean"].where(part["mean"] != 0)
+        parts.append(part.assign(feature=feature))
+    # Cells that are unusual in at least one feature
+    parts.append(pd.DataFrame({"n_cells": grouped.size(),
+                               "pct_outlier_cells": 100 * flag_groups["Any feature"].mean()})
+                 .assign(feature="Any feature"))
+    columns = keys + ["feature", "n_cells", "mean", "median", "sd", "cv_percent", "p5", "p95", "pct_outlier_cells"]
+    return (pd.concat(parts).reset_index().reindex(columns=columns)
+            .sort_values(keys[:2], kind="stable", ignore_index=True))
 
 
 def feature_grid(n_panels, width=4.2, height=3.6):
@@ -1644,21 +2176,31 @@ def plot_imaging_marker_correlations(correlations):
 
 
 def plot_cell_distributions(cells_img):
-    """F6: one panel per feature; violin plot of ALL single cells of each population."""
+    """
+    F6: one panel per feature; violin plot of the single cells of each population.
+    The violin shape is estimated from at most MAX_CELLS_PER_VIOLIN random cells
+    (the shape barely changes, but drawing gets much faster with large exports);
+    the median line uses ALL cells.
+    """
     pops = list(POPULATIONS)
+    rng = np.random.default_rng(0)            # same random cells every run
     fig, axes = feature_grid(len(IMAGING_FEATURES))
     for ax, feature in zip(axes, IMAGING_FEATURES):
         for i, pop in enumerate(pops):
             values = cells_img.loc[cells_img["population"] == pop, feature].dropna().values
             if len(values) < 2:
                 continue
+            shown = values
+            if len(values) > MAX_CELLS_PER_VIOLIN:
+                shown = rng.choice(values, MAX_CELLS_PER_VIOLIN, replace=False)
             # The violin's width shows how many cells have each value
-            part = ax.violinplot(values, positions=[i], widths=0.8, showmedians=True, showextrema=False)
+            part = ax.violinplot(shown, positions=[i], widths=0.8, showextrema=False)
             for body in part["bodies"]:
                 body.set_facecolor(population_color(pop))
                 body.set_edgecolor(population_color(pop))
                 body.set_alpha(0.45)
-            part["cmedians"].set_color("#0b0b0b")
+            # The median of all cells as a black line across the violin
+            ax.plot([i - 0.25, i + 0.25], [np.median(values)] * 2, color="#0b0b0b", linewidth=1.5)
         ax.set_xticks(range(len(pops)), pops, rotation=20, ha="right")
         ax.set_title(feature, loc="left")
         ax.set_ylabel("Value per cell")
@@ -1712,17 +2254,18 @@ def plot_morphology_map(cells_img, flags, condition_column, conditions):
     save(fig, "F8_imaging_morphology_map.png")
 
 
-def run_imaging_profiles(imaging, protein_rna, data_dir, metadata, condition_column, conditions):
+def run_imaging_profiles(imaging, facs_markers, data_dir, metadata, condition_column, conditions):
     """
     Section F from start to end. Sample-level tables and plots F1-F5 always;
     cell-level table and plots F6-F8 only if the per-cell export is there.
-    Returns the population summary table.
+    Uses only the FACS samples: metadata = the FACS rows of the sample sheet,
+    conditions = the chosen FACS conditions. Returns the population summary table.
     """
     # --- Sample level (from the FlowJo table) ---
     outliers = imaging_outlier_samples(imaging, condition_column)
     summary = imaging_population_summary(imaging, outliers)
     scores, loadings = imaging_pca(imaging, condition_column)
-    correlations = imaging_marker_correlations(imaging, protein_rna)
+    correlations = imaging_marker_correlations(imaging, facs_markers)
 
     summary.to_csv(OUTPUT_DIR / "F_imaging_population_summary.csv", index=False)
     outliers.to_csv(OUTPUT_DIR / "F_imaging_outlier_samples.csv", index=False)
@@ -1761,110 +2304,155 @@ def run_imaging_profiles(imaging, protein_rna, data_dir, metadata, condition_col
 # =============================================================================
 # Makes realistic-looking fake input files so the whole program can be tested
 # before real data exists. The numbers are random but follow fixed patterns
-# (e.g. more immune cells in "Disease") so the statistics have something to find.
+# (e.g. more neutrophils in "Disease", fewer neutrophils and urothelial cells
+# captured by scRNA-seq) so the statistics have something to find.
+# The demo is built from individual CELL TYPES (the Flex labels); each FACS gate
+# then gets the cells of the cell types listed under its population. The FlowJo
+# export contains the gates of EVERY panel, so the demo works with either panel.
+
+# Per cell type: atlas name, typical share (Healthy, Disease), how well scRNA-seq
+# captures it, marker levels on FACS, and imaging features (area, eccentricity, radial moment)
+DEMO_CELL_TYPES = {
+    #  label                   atlas name         Healthy Disease capture  CD45  CD10  CD13  EpCAM  imaging
+    "Neutrophil":           ("Neutrophil",       0.12, 0.28, 0.5, {"CD45": 7000, "CD10": 1500, "CD13": 3000, "EpCAM": 300},  [110, 0.35, 5.0]),
+    "T cell":               ("T/NK cell",        0.08, 0.10, 1.2, {"CD45": 9500, "CD10": 300,  "CD13": 300,  "EpCAM": 300},  [70, 0.25, 3.5]),
+    "Macrophage":           ("Myeloid cell",     0.05, 0.07, 1.0, {"CD45": 8000, "CD10": 400,  "CD13": 3500, "EpCAM": 300},  [150, 0.40, 5.5]),
+    "Proximal tubule cell": ("Proximal tubule",  0.18, 0.13, 1.0, {"CD45": 250,  "CD10": 6000, "CD13": 8000, "EpCAM": 1200}, [210, 0.50, 7.0]),
+    "Distal tubule cell":   ("Distal tubule",    0.12, 0.09, 1.0, {"CD45": 250,  "CD10": 600,  "CD13": 800,  "EpCAM": 6000}, [180, 0.45, 6.5]),
+    "Collecting duct cell": ("Collecting duct",  0.08, 0.06, 1.0, {"CD45": 250,  "CD10": 500,  "CD13": 700,  "EpCAM": 7000}, [190, 0.45, 6.5]),
+    "Urothelial cell":      ("Urothelial",       0.30, 0.20, 0.7, {"CD45": 250,  "CD10": 800,  "CD13": 900,  "EpCAM": 7000}, [340, 0.60, 9.5]),
+    "Podocyte":             ("Podocyte",         0.03, 0.03, 1.0, {"CD45": 250,  "CD10": 500,  "CD13": 700,  "EpCAM": 300},  [160, 0.45, 5.5]),
+    "Fibroblast":           ("Fibroblast",       0.04, 0.04, 1.0, {"CD45": 250,  "CD10": 700,  "CD13": 900,  "EpCAM": 300},  [170, 0.70, 6.0]),
+}
+
+
+def demo_gates():
+    """Every population gate of every panel: gate path -> the demo cell types in it (one entry per gate)."""
+    gates = {}
+    for panel in PANELS.values():
+        for info in panel["populations"].values():
+            gates[info["gate"]] = [t for t in DEMO_CELL_TYPES if t in info["seq_labels"]]
+    return gates
+
 
 def make_demo_data(folder):
     """
     Write small, made-up input files in the exact format the program expects,
-    so you can test the program before you have real data.
-    10 samples: 5 'Healthy', 5 'Disease'.
+    so you can test the program before you have real data. As in a real study,
+    the two methods measured DIFFERENT people:
+      scRNA-seq : 12 samples from 8 people (donor_id P1-P8): P1-P4 'Healthy',
+                  P5-P8 'Disease'; P1, P2, P5 and P6 gave two samples each
+      FACS      : POOL = one pool of healthy urine from many donors ('Healthy pool')
+                  + FACS01-FACS06 = 6 other patients ('Disease')
+    Plus a reference atlas of 8 healthy donors and a per-cell imaging export.
+    The FlowJo and per-cell files hold the populations of EVERY panel, so the
+    demo can be analysed with either panel.
     """
     rng = np.random.default_rng(1)          # fixed seed -> the same demo data every time
-    folder.mkdir(exist_ok=True)
-    pops = list(POPULATIONS)
-    # 10 samples S01..S10, the first 5 Healthy and the last 5 Disease
-    samples = [f"S{i:02d}" for i in range(1, 11)]
-    conditions = ["Healthy"] * 5 + ["Disease"] * 5
-    metadata = pd.DataFrame({
-        SAMPLE_COLUMN: samples,
-        FACS_NAME_COLUMN: [f"{s}_urine.fcs" for s in samples],
-        "condition": conditions,
-        "flex_probe_barcode": [f"BC{i:03d}" for i in range(1, 11)],
-    })
+    folder.mkdir(parents=True, exist_ok=True)
+    types = list(DEMO_CELL_TYPES)
+    share = {condition: np.array([DEMO_CELL_TYPES[t][1 + k] for t in types])
+             for k, condition in enumerate(["Healthy", "Disease"])}
+    capture = np.array([DEMO_CELL_TYPES[t][3] for t in types])
+    protein = {t: DEMO_CELL_TYPES[t][4] for t in types}
+    imaging = {t: DEMO_CELL_TYPES[t][5] for t in types}
 
-    # Typical share of Immune / Proximal tubule / Epithelial / Other CD45- cells per condition
-    typical_fraction = {"Healthy": [0.25, 0.18, 0.50, 0.07], "Disease": [0.45, 0.13, 0.35, 0.07]}
-    protein_level = {  # typical median intensity per population and marker
-        "Immune":          {"CD45": 9000, "CD10": 600,  "CD13": 1500, "EpCAM": 300},
-        "Proximal tubule": {"CD45": 250,  "CD10": 6000, "CD13": 8000, "EpCAM": 2000},
-        "Epithelial":      {"CD45": 250,  "CD10": 800,  "CD13": 900,  "EpCAM": 7000},
-        "Other CD45-":     {"CD45": 250,  "CD10": 500,  "CD13": 700,  "EpCAM": 300},
-    }
-    # Typical value of each imaging feature per population
-    imaging_level = {"Immune": [90, 0.30, 4.0], "Proximal tubule": [210, 0.50, 7.0],
-                     "Epithelial": [320, 0.60, 9.0], "Other CD45-": [150, 0.45, 5.5]}
+    seq_samples = [f"SEQ{i:02d}" for i in range(1, 13)]
+    seq_donors = ["P1", "P1", "P2", "P2", "P3", "P4", "P5", "P5", "P6", "P6", "P7", "P8"]
+    seq_conditions = ["Healthy"] * 6 + ["Disease"] * 6
+    facs_samples = ["POOL"] + [f"FACS{i:02d}" for i in range(1, 7)]
+    facs_conditions = ["Healthy pool"] + ["Disease"] * 6
+    # The sample sheet: one row per sample, with the method that measured it
+    metadata = pd.concat([
+        pd.DataFrame({SAMPLE_COLUMN: seq_samples, METHOD_COLUMN: "scRNA-seq", FACS_NAME_COLUMN: "",
+                      DONOR_COLUMN: seq_donors, "condition": seq_conditions,
+                      "flex_probe_barcode": [f"BC{i:03d}" for i in range(1, 13)]}),
+        pd.DataFrame({SAMPLE_COLUMN: facs_samples, METHOD_COLUMN: "FACS",
+                      FACS_NAME_COLUMN: [f"{s}_urine.fcs" for s in facs_samples], DONOR_COLUMN: "",
+                      "condition": facs_conditions, "flex_probe_barcode": ""}),
+    ])
 
-    facs_rows, cell_tables = [], []
-    for sample, condition in zip(samples, conditions):
-        # --- FACS row for this sample ---
-        # Random population fractions around the typical values of its condition
-        true_fraction = rng.dirichlet(np.array(typical_fraction[condition]) * 40)
+    # --- FACS: one row per FACS sample, with the gates of every panel ---
+    gates = demo_gates()
+    facs_rows = []
+    for sample, condition in zip(facs_samples, facs_conditions):
+        biology = "Healthy" if condition.startswith("Healthy") else "Disease"
+        # A pool averages many people, so it varies less around the typical values
+        concentration = 300 if sample == "POOL" else 60
+        fraction = dict(zip(types, rng.dirichlet(share[biology] * concentration)))
         live = int(rng.integers(20000, 60000))       # number of live single cells
         row = {"Name": f"{sample}_urine.fcs", COUNT_COLUMN.format(gate=FACS_TOTAL_GATE): live}
-        marker_factor = {m: rng.lognormal(0, 0.25) for m in MARKERS}  # sample-to-sample variation
-        for pop, fraction, img in zip(pops, true_fraction, imaging_level.values()):
-            gate = POPULATIONS[pop]["gate"]
-            # Gate count (85% of live cells fall in one of the four gates)
-            row[COUNT_COLUMN.format(gate=gate)] = int(live * fraction * 0.85)
-            # Marker medians with some random noise
-            for marker, info in MARKERS.items():
-                value = protein_level[pop][marker] * marker_factor[marker] * rng.lognormal(0, 0.1)
+        marker_factor = {m: rng.lognormal(0, 0.25) for m in ALL_MARKERS}   # sample-to-sample variation
+        for gate, members in gates.items():
+            weights = np.array([fraction[t] for t in members])
+            # Gate count (85% of live cells fall in one of the population gates)
+            row[COUNT_COLUMN.format(gate=gate)] = int(live * weights.sum() * 0.85)
+            weights = weights / weights.sum()
+            # Marker medians: the mix of the cell types in the gate, with some random noise
+            for marker, info in ALL_MARKERS.items():
+                level = sum(w * protein[t][marker] for w, t in zip(weights, members))
+                value = level * marker_factor[marker] * rng.lognormal(0, 0.1)
                 row[MEDIAN_COLUMN.format(gate=gate, parameter=info["facs_parameter"])] = round(value, 1)
             # Imaging medians; proximal tubule cells are 15% larger in Disease
-            shift = 1.15 if condition == "Disease" and pop == "Proximal tubule" else 1.0
-            for feature, base in zip(IMAGING_FEATURES, img):
-                row[MEDIAN_COLUMN.format(gate=gate, parameter=feature)] = round(base * shift * rng.lognormal(0, 0.08), 3)
+            for f, feature in enumerate(IMAGING_FEATURES):
+                level = sum(w * imaging[t][f % 3] * (1.15 if biology == "Disease" and t == "Proximal tubule cell" else 1)
+                            for w, t in zip(weights, members))
+                row[MEDIAN_COLUMN.format(gate=gate, parameter=feature)] = round(level * rng.lognormal(0, 0.08), 3)
         facs_rows.append(row)
 
-        # scRNA-seq: similar fractions with method-specific noise, plus a few 'Other' cells
-        seq_fraction = rng.dirichlet(np.append(true_fraction, 0.05) * 60)
+    # --- scRNA-seq: one table of cells per scRNA-seq sample ---
+    # Every person has their own composition; their samples vary a little around it
+    person_fraction = {}
+    for donor, condition in dict(zip(seq_donors, seq_conditions)).items():
+        expected = share[condition] * capture          # as scRNA-seq captures the cell types
+        person_fraction[donor] = rng.dirichlet(np.append(expected / expected.sum(), 0.05) * 60)
+    cell_tables = []
+    for sample, donor in zip(seq_samples, seq_donors):
+        # Cell types of this sample (plus a few 'Other' cells)
+        fraction = rng.dirichlet(person_fraction[donor] * 300)
         n_cells = int(rng.integers(800, 2500))
-        # Give every cell a population, then a matching notebook label
-        cell_pop = rng.choice(pops + ["Other"], size=n_cells, p=seq_fraction)
-        labels = [rng.choice(POPULATIONS[p]["seq_labels"]) if p != "Other"
-                  else rng.choice(["Unknown", "Doublet"]) for p in cell_pop]
+        marker_factor = {m: rng.lognormal(0, 0.25) for m in ALL_MARKERS}
+        labels = rng.choice(types + ["Other"], size=n_cells, p=fraction)
+        labels = np.where(labels == "Other", rng.choice(["Unknown", "Doublet"], size=n_cells), labels)
         cells = pd.DataFrame({"cell_barcode": [f"{sample}_{i:05d}" for i in range(n_cells)],
                               SAMPLE_COLUMN: sample, CELL_TYPE_COLUMN: labels})
-        # Gene expression that follows the protein level of the cell's population
-        for marker, info in MARKERS.items():
-            mean = np.array([np.log1p(protein_level[p][marker] / 1500 * marker_factor[marker])
-                             if p != "Other" else 0.3 for p in cell_pop])
+        # Gene expression that follows the protein level of the cell type (all four genes)
+        for marker, info in ALL_MARKERS.items():
+            level = {t: np.log1p(protein[t][marker] / 1500 * marker_factor[marker]) for t in types}
+            mean = np.array([level.get(label, 0.3) for label in labels])
             cells[info["gene"]] = np.clip(rng.normal(mean, 0.5), 0, None).round(3)
         cell_tables.append(cells)
 
     # --- Reference atlas: 8 healthy donors with known cell types (per-cell format) ---
-    # Made after the sample data, so the three files above are the same as before.
     atlas_tables = []
     for d in range(1, 9):
         # Healthy-like composition with donor-to-donor variation, plus a few unassigned cells
-        fraction = rng.dirichlet(np.append(typical_fraction["Healthy"], 0.03) * 50)
+        fraction = rng.dirichlet(np.append(share["Healthy"], 0.03) * 60)
         n_atlas = int(rng.integers(1500, 4000))
-        atlas_pop = rng.choice(pops + ["Other"], size=n_atlas, p=fraction)
+        atlas_type = rng.choice(types + ["Other"], size=n_atlas, p=fraction)
         # Atlas names for the cell types (they differ from the notebook labels)
-        labels = [rng.choice(POPULATIONS[p].get("atlas_labels", POPULATIONS[p]["seq_labels"]))
-                  if p != "Other" else "Unknown" for p in atlas_pop]
+        labels = [DEMO_CELL_TYPES[t][0] if t != "Other" else "Unknown" for t in atlas_type]
         atlas = pd.DataFrame({ATLAS_DONOR_COLUMN: f"D{d:02d}", ATLAS_CELL_TYPE_COLUMN: labels})
-        # Marker genes with the same population pattern as in our Flex data
-        for marker, info in MARKERS.items():
-            mean = np.array([np.log1p(protein_level[p][marker] / 1500) if p != "Other" else 0.3
-                             for p in atlas_pop])
+        for marker, info in ALL_MARKERS.items():
+            level = {t: np.log1p(protein[t][marker] / 1500) for t in types}
+            mean = np.array([level.get(t, 0.3) for t in atlas_type])
             atlas[info["gene"]] = np.clip(rng.normal(mean, 0.5), 0, None).round(3)
         atlas_tables.append(atlas)
 
-    # --- Per-cell imaging export: the single cells of every gate (section F) ---
-    # Uses its own random numbers, so all the other demo files stay exactly the same.
+    # --- Per-cell imaging export: the single cells of every population gate (section F) ---
+    # (the populations of all panels; a real export only has those of your panel)
+    all_populations = {pop: info for panel in PANELS.values() for pop, info in panel["populations"].items()}
     cell_rng = np.random.default_rng(2)
     imaging_cells = []
     for row in facs_rows:
-        for pop in pops:
-            gate = POPULATIONS[pop]["gate"]
+        for pop, info in all_populations.items():
             n_cells_gate = int(cell_rng.integers(150, 300))
             part = {FACS_NAME_COLUMN: row["Name"], FACS_CELLS_POPULATION_COLUMN: pop}
             # About 2% odd cells (e.g. doublets or clumps) that sit far from the rest
             odd = cell_rng.random(n_cells_gate) < 0.02
             for feature in IMAGING_FEATURES:
                 # Cells scatter around the sample's median from the FlowJo table
-                median = row[MEDIAN_COLUMN.format(gate=gate, parameter=feature)]
+                median = row[MEDIAN_COLUMN.format(gate=info["gate"], parameter=feature)]
                 values = median * cell_rng.lognormal(0, 0.12, n_cells_gate)
                 values[odd] *= 1.9
                 if "Eccentricity" in feature:          # eccentricity is between 0 and 1
@@ -1874,10 +2462,10 @@ def make_demo_data(folder):
 
     # Write the files in the same formats as the real inputs
     metadata.to_csv(folder / METADATA_FILE, index=False)
-    pd.concat(imaging_cells).to_csv(folder / FACS_CELLS_FILE, index=False)
     pd.DataFrame(facs_rows).to_excel(folder / FACS_FILE, index=False)
     pd.concat(cell_tables).to_csv(folder / SEQ_FILE, index=False)
     pd.concat(atlas_tables).to_csv(folder / ATLAS_FILE, index=False)
+    pd.concat(imaging_cells).to_csv(folder / FACS_CELLS_FILE, index=False)
     print(f"Demo data written to {folder}")
 
 
@@ -1887,97 +2475,134 @@ def make_demo_data(folder):
 # run_analysis() does the actual work and is shared by the terminal (main) and
 # the web app (app.py). main() only handles the command-line options.
 
-def run_analysis(data_dir, output_dir, condition_column=None, conditions=None):
+def run_analysis(data_dir, output_dir, condition_column=None, seq_conditions=None, facs_conditions=None,
+                 panel=None):
     """
     Run steps 1-5 on the input files in data_dir, plus section E (if an atlas
     file is there) and section F (if imaging features are set), and write every
     table and plot to output_dir. Used by the command line (main, below) and by the web
-    interface (app.py). If condition_column or conditions is None, the user is
-    asked in the terminal. Returns the summary tables so the caller can show them.
+    interface (app.py). Anything not given (condition column, the scRNA-seq
+    conditions, the FACS conditions) is asked in the terminal.
+    panel = which FACS panel was used (a key of PANELS); None = FACS_PANEL from SETTINGS.
+    Returns the summary tables so the caller can show them.
     """
     # OUTPUT_DIR is changed for the whole script so save() writes to the right folder
     global OUTPUT_DIR
     data_dir = Path(data_dir)
     OUTPUT_DIR = Path(output_dir)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)   # create the results folder if needed
+    # Switch the gating, the Flex labels and the markers to the chosen panel
+    use_panel(panel or FACS_PANEL)
+    print(f"FACS panel: {PANELS[ACTIVE_PANEL]['description']} -> populations: {', '.join(POPULATIONS)}")
 
     # --- Step 1: load files and choose conditions ---
     metadata = load_metadata(data_dir / METADATA_FILE)
-    condition_column, conditions = choose_conditions(metadata, condition_column, conditions)
-    # Keep only the samples that belong to the chosen conditions
-    metadata = metadata[metadata[condition_column].isin(conditions)]
-    facs = load_facs(data_dir / FACS_FILE, metadata)
-    cells = load_seq(data_dir / SEQ_FILE, metadata)
+    condition_column, conditions = choose_conditions(metadata, condition_column, seq_conditions, facs_conditions)
+    # Keep only the samples of the chosen conditions, separately for each method
+    chosen = pd.concat([samples_of(metadata, m).loc[lambda d: d[condition_column].isin(conditions[m])]
+                        for m in METHODS], ignore_index=True)
+    seq_metadata, facs_metadata = samples_of(chosen, "scRNA-seq"), samples_of(chosen, "FACS")
+    facs = load_facs(data_dir / FACS_FILE, facs_metadata)
+    cells = load_seq(data_dir / SEQ_FILE, seq_metadata)
+    if facs.empty:
+        raise SystemExit(f"None of the chosen FACS samples were found in {FACS_FILE}. "
+                         f"Check the '{FACS_NAME_COLUMN}' column of the sample sheet.")
+    if cells.empty:
+        raise SystemExit(f"None of the chosen scRNA-seq samples have cells in {SEQ_FILE}. "
+                         f"Check the '{SAMPLE_COLUMN}' column of both files.")
     print(f"Loaded {len(facs)} FACS samples and {len(cells)} cells "
           f"from {cells[SAMPLE_COLUMN].nunique()} scRNA-seq samples.")
 
     # --- Step 2: build tables ---
-    proportions = build_proportions(facs, cells, metadata, condition_column)
-    protein_rna = build_protein_vs_rna(facs, cells, metadata, condition_column)
+    # Proportions per sample, then per PERSON (samples of the same person combined):
+    # every statistic and plot below counts each person once
+    sample_proportions = build_proportions(facs, cells, chosen, condition_column)
+    proportions = combine_proportions_per_donor(sample_proportions, chosen, condition_column)
+    # Marker levels per sample (FACS protein is also used per sample in section F) and per person (section C)
+    facs_markers = build_facs_markers(facs, facs_metadata, condition_column)
+    rna_markers = build_rna_markers(cells, seq_metadata, condition_column)
+    keys = ["population", "marker", "gene", condition_column]
+    protein_rna = build_protein_vs_rna(
+        combine_per_donor(facs_markers, facs_metadata, keys, {"protein_median": ("protein_median", "mean")}),
+        combine_per_donor(rna_markers, seq_metadata, keys, {"rna_mean": ("rna_mean", "mean")}))
     # Imaging table only if imaging features are listed in SETTINGS
-    imaging = build_imaging(facs, metadata, condition_column) if IMAGING_FEATURES else None
+    imaging = build_imaging(facs, facs_metadata, condition_column) if IMAGING_FEATURES else None
+    # The reference atlas (optional): loaded here because section A's overview shows it too
+    atlas = atlas_props = None
+    atlas_path = data_dir / ATLAS_FILE
+    if atlas_path.exists():
+        atlas = load_atlas(atlas_path)
+        atlas_props = build_atlas_proportions(atlas)
 
     # --- Step 3: statistics ---
-    agreement = method_agreement_stats(proportions)                        # section A
+    overview = composition_overview(proportions, condition_column, conditions, atlas_props)  # section A
+    comparison = method_comparison_stats(proportions, condition_column, conditions)       # section A
     by_condition = condition_stats(proportions, "proportion", ["population", "method"],
-                                   condition_column, conditions)          # section B
-    rna_stats = protein_rna_stats(protein_rna)                             # section C
+                                   condition_column, all_conditions(conditions))           # section B
+    rna_stats = protein_rna_stats(protein_rna)                                              # section C
 
     # --- Step 4: save tables ---
     print("\nSaving results to", OUTPUT_DIR)
+    sample_proportions.to_csv(OUTPUT_DIR / "A_proportions_per_sample.csv", index=False)
     proportions.to_csv(OUTPUT_DIR / "A_proportions.csv", index=False)
-    agreement.to_csv(OUTPUT_DIR / "A_method_agreement_stats.csv", index=False)
+    overview.to_csv(OUTPUT_DIR / "A_composition_overview.csv", index=False)
+    comparison.to_csv(OUTPUT_DIR / "A_method_comparison_stats.csv", index=False)
     by_condition.to_csv(OUTPUT_DIR / "B_condition_tests_proportions.csv", index=False)
+    facs_markers.to_csv(OUTPUT_DIR / "C_protein_per_sample.csv", index=False)
+    rna_markers.to_csv(OUTPUT_DIR / "C_rna_per_sample.csv", index=False)
     protein_rna.to_csv(OUTPUT_DIR / "C_protein_vs_rna.csv", index=False)
     rna_stats.to_csv(OUTPUT_DIR / "C_protein_vs_rna_stats.csv", index=False)
 
     # --- Step 5: plots ---
     plot_stacked_proportions(proportions, condition_column, conditions)
-    plot_method_scatter(proportions, agreement)
-    plot_bland_altman(proportions, agreement)
-    # Comparing conditions only makes sense with at least two of them
-    if len(conditions) > 1:
-        plot_proportions_by_condition(proportions, condition_column, conditions)
+    plot_method_boxes(proportions, condition_column, conditions)
+    plot_method_difference(comparison)
+    plot_composition_overview(overview)
+    # Comparing conditions only makes sense when a method has at least two of them
+    if any(len(conditions[m]) > 1 for m in METHODS):
+        plot_proportions_by_condition(proportions, condition_column, all_conditions(conditions))
     plot_protein_vs_rna(protein_rna, rna_stats)
 
-    # --- Section D: imaging statistics, tables and plot (skipped if no features) ---
+    # --- Section D: imaging statistics, tables and plot (FACS only; skipped if no features) ---
     imaging_pop = imaging_cond = None
     if imaging is not None:
         imaging_pop = imaging_between_populations(imaging)
         imaging_cond = condition_stats(imaging, "value", ["feature", "population"],
-                                       condition_column, conditions)
+                                       condition_column, conditions["FACS"])
         imaging.to_csv(OUTPUT_DIR / "D_imaging_features.csv", index=False)
         imaging_pop.to_csv(OUTPUT_DIR / "D_imaging_tests_between_populations.csv", index=False)
         imaging_cond.to_csv(OUTPUT_DIR / "D_imaging_tests_between_conditions.csv", index=False)
-        plot_imaging(imaging, condition_column, conditions)
+        plot_imaging(imaging, condition_column, conditions["FACS"])
 
     # --- Section E: comparison with the reference atlas (skipped if no atlas file) ---
     atlas_tests = None
-    atlas_path = data_dir / ATLAS_FILE
-    if atlas_path.exists():
+    if atlas is not None:
         print("\nComparing with the reference atlas ...")
-        atlas_tests = run_atlas_comparison(atlas_path, proportions, cells, protein_rna,
+        atlas_tests = run_atlas_comparison(atlas, atlas_props, proportions, cells, facs_markers,
                                            condition_column, conditions)
     else:
         print(f"\nNo reference atlas ({ATLAS_FILE}) found - section E skipped.")
 
-    # --- Section F: imaging profiles per cell type (skipped if no imaging features) ---
+    # --- Section F: imaging profiles per cell type (FACS only; skipped if no imaging features) ---
     imaging_summary = None
     if imaging is not None:
         print("\nImaging profiles per cell type ...")
-        imaging_summary = run_imaging_profiles(imaging, protein_rna, data_dir, metadata,
-                                               condition_column, conditions)
+        imaging_summary = run_imaging_profiles(imaging, facs_markers, data_dir, facs_metadata,
+                                               condition_column, conditions["FACS"])
 
     # Hand the main results back to whoever called this (terminal or web app)
     return {
         "imaging_summary": imaging_summary,
         "atlas_tests": atlas_tests,
+        "panel": ACTIVE_PANEL,
         "condition_column": condition_column,
         "conditions": conditions,
         "n_facs_samples": len(facs),
         "n_cells": len(cells),
         "n_seq_samples": cells[SAMPLE_COLUMN].nunique(),
-        "agreement": agreement,
+        "n_seq_people": proportions.loc[proportions["method"] == "scRNA-seq", SAMPLE_COLUMN].nunique(),
+        "overview": overview,
+        "comparison": comparison,
         "by_condition": by_condition,
         "rna_stats": rna_stats,
         "imaging_pop": imaging_pop,
@@ -1990,7 +2615,10 @@ def main():
     parser = argparse.ArgumentParser(description="Compare FACS (BD S8) and 10x Flex scRNA-seq cell populations.")
     parser.add_argument("--demo", action="store_true", help="create and analyse made-up demo data")
     parser.add_argument("--condition-column", help="metadata column that holds the conditions")
-    parser.add_argument("--conditions", nargs="+", help="conditions to include (default: ask)")
+    parser.add_argument("--seq-conditions", nargs="+", help="conditions of the scRNA-seq samples to include (default: ask)")
+    parser.add_argument("--facs-conditions", nargs="+", help="conditions of the FACS samples to include (default: ask)")
+    parser.add_argument("--panel", choices=list(PANELS),
+                        help=f"antibodies used on FACS (default: FACS_PANEL in SETTINGS = {FACS_PANEL})")
     args = parser.parse_args()
 
     # Use the real data folders, or create demo data and use demo folders instead
@@ -2000,15 +2628,16 @@ def main():
         output_dir = SCRIPT_DIR / "results_demo"
         make_demo_data(data_dir)
 
-    # Run the whole analysis (steps 1-5)
-    results = run_analysis(data_dir, output_dir, args.condition_column, args.conditions)
-    agreement, by_condition = results["agreement"], results["by_condition"]
+    # Run the whole analysis (steps 1-5, plus E and F)
+    results = run_analysis(data_dir, output_dir, args.condition_column, args.seq_conditions, args.facs_conditions,
+                           args.panel)
+    comparison, by_condition = results["comparison"], results["by_condition"]
 
     # --- Step 6: short summary in the terminal ---
-    # How well FACS and scRNA-seq agree, per population
-    print("\nFACS vs scRNA-seq agreement (proportions):")
-    print(agreement[["population", "n", "spearman_r", "spearman_q_fdr",
-                     "bland_altman_bias", "wilcoxon_q_fdr"]].round(3).to_string(index=False))
+    # How the scRNA-seq group(s) compare with the FACS group(s), per population
+    print("\nscRNA-seq vs FACS (proportions, median per group):")
+    print(comparison[["comparison", "population", "n_seq", "n_facs", "median_seq", "median_facs",
+                      "seq_minus_facs", "test", "q_value_fdr"]].round(3).to_string(index=False))
     # Which condition differences are significant after FDR correction
     if not by_condition.empty:
         hits = by_condition[by_condition["significant"]]

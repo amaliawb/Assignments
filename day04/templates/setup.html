@@ -2,23 +2,39 @@
 {% block content %}
 <section class="card">
   <h1>2. Choose the conditions</h1>
-  <p>The sample sheet has {{ n_samples }} samples. Pick the column that holds the conditions,
-     then tick the conditions to compare. Ticking none includes all of them.</p>
+  <p>The sample sheet has {{ n_samples["scRNA-seq"] }} scRNA-seq samples and {{ n_samples["FACS"] }} FACS samples.
+     Pick the column that holds the conditions, then tick the conditions to include for each method.
+     Every ticked scRNA-seq condition is compared with every ticked FACS condition
+     (e.g. scRNA-seq <i>Disease</i> vs FACS <i>Healthy pool</i>). Ticking none includes all conditions of that method.</p>
   {% if error %}<pre class="alert">{{ error }}</pre>{% endif %}
 
   <form action="{{ url_for('analyse', run_id=run_id) }}" method="post">
+    <h3>FACS panel: which antibodies were used?</h3>
+    {% for key, panel in panels.items() %}
+    <label class="inline"><input type="radio" name="panel" value="{{ key }}"
+           {% if key == current_panel %}checked{% endif %}> {{ panel.description }}
+      <span class="muted">({{ panel.populations | join(" · ") }})</span></label>
+    {% endfor %}
+    <p class="muted">The panel decides the gating and which Flex cell types each FACS population is compared with.
+       The start page lists the gates and labels of each panel.</p>
+
     <h3>Condition column</h3>
     {% for option in options %}
     <label class="inline"><input type="radio" name="condition_column" value="{{ option.column }}"
            {% if loop.first %}checked{% endif %}> {{ option.column }}</label>
     {% endfor %}
 
-    <h3>Conditions to include</h3>
     {% for option in options %}
+    {# One block per column; a disabled fieldset (and everything inside it) is not sent with the form #}
     <fieldset class="conditions" data-column="{{ option.column }}" {% if not loop.first %}disabled hidden{% endif %}>
-      {% for value, count in option["values"] %}
-      <label class="inline"><input type="checkbox" name="conditions" value="{{ value }}" checked>
-             {{ value }} <span class="muted">({{ count }} samples)</span></label>
+      {% for entry in option.methods %}
+      <h3>{{ entry.heading }}</h3>
+      {% for value, count, people in entry["values"] %}
+      <label class="inline"><input type="checkbox" name="{{ entry.field }}" value="{{ value }}" checked>
+             {{ value }} <span class="muted">({{ count }} sample{{ "" if count == 1 else "s" }}{% if people < count %} from {{ people }} people{% endif %})</span></label>
+      {% else %}
+      <p class="muted">No {{ entry.method }} samples have a value in this column.</p>
+      {% endfor %}
       {% endfor %}
     </fieldset>
     {% endfor %}

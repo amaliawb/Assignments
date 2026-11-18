@@ -30,6 +30,14 @@ POPS = list(analysis.POPULATIONS)     # e.g. ["Immune", "Proximal tubule", ...]
 FEATURES = analysis.IMAGING_FEATURES  # e.g. ["Area (LightLoss)", ...]
 CUTOFF = analysis.OUTLIER_CUTOFF      # 3.5
 
+@pytest.fixture(autouse=True)
+def default_panel():
+    """Every test starts and ends with the default FACS panel (some tests switch panels)."""
+    analysis.use_panel(analysis.FACS_PANEL)
+    yield
+    analysis.use_panel(analysis.FACS_PANEL)
+
+
 # Imaging tests are skipped if IMAGING_FEATURES = [] in the settings
 needs_imaging = pytest.mark.skipif(not FEATURES, reason="no IMAGING_FEATURES in SETTINGS")
 needs_two_features = pytest.mark.skipif(len(FEATURES) < 2, reason="PCA needs 2+ imaging features")
@@ -74,11 +82,16 @@ def make_cells(counts):
     return pd.DataFrame(rows)
 
 
-def make_metadata(conditions):
-    """A sample sheet. conditions = {sample: condition}"""
-    return pd.DataFrame({S: list(conditions),
-                         analysis.FACS_NAME_COLUMN: [f"{s}.fcs" for s in conditions],
-                         COND: list(conditions.values())})
+def make_metadata(conditions, methods=("scRNA-seq", "FACS")):
+    """
+    A sample sheet like load_metadata() returns (with its "method" column).
+    conditions = {sample: condition}; every sample is listed once for each method
+    in `methods` (so the same tiny sample can be used for FACS and scRNA-seq).
+    """
+    return pd.concat([pd.DataFrame({S: list(conditions),
+                                    analysis.FACS_NAME_COLUMN: [f"{s}.fcs" for s in conditions],
+                                    COND: list(conditions.values()), "method": method})
+                      for method in methods], ignore_index=True)
 
 
 def make_proportions(values, condition="Healthy", methods=("FACS", "scRNA-seq")):
@@ -86,6 +99,8 @@ def make_proportions(values, condition="Healthy", methods=("FACS", "scRNA-seq"))
     A proportions table like build_proportions() returns.
     values = {sample: [proportion of POPS[0], of POPS[1], ...]} (same for every method)
     """
+    # (each sample gets a row for every method; real FACS and scRNA-seq samples differ,
+    #  but the functions never pair them by sample, so that does not matter here)
     rows = [{S: sample, "population": pop, "method": method, "proportion": props[i], COND: condition}
             for sample, props in values.items()
             for method in methods
@@ -115,24 +130,78 @@ def write_csv(path, text):
 # =============================================================================
 # The proportions are only correct if every cell is counted exactly once.
 
-def test_no_population_gate_sits_inside_another():
+# Every check runs for BOTH panels (CD45 + EpCAM, and CD45 + EpCAM + CD10 + CD13)
+every_panel = pytest.mark.parametrize("panel", list(analysis.PANELS))
+
+
+@every_panel
+def test_no_population_gate_sits_inside_another(panel):
     # If gate B were a child of gate A (path "A/..."), B's cells would be counted twice
-    gates = [info["gate"] for info in analysis.POPULATIONS.values()]
+    gates = [info["gate"] for info in analysis.PANELS[panel]["populations"].values()]
     for a in gates:
         for b in gates:
             assert not b.startswith(a + "/"), f"{b} is inside {a}: its cells would be counted twice"
 
 
-def test_every_population_gate_is_below_the_live_gate():
-    for info in analysis.POPULATIONS.values():
+@every_panel
+def test_every_population_gate_is_below_the_live_gate(panel):
+    # Both panels use the Fixable Yellow live/dead gate
+    for info in analysis.PANELS[panel]["populations"].values():
         assert info["gate"].startswith(analysis.LIVE_GATE + "/")
 
 
-def test_no_cell_type_label_belongs_to_two_populations():
+@every_panel
+def test_no_cell_type_label_belongs_to_two_populations(panel):
     # A scRNA-seq or atlas label listed under two populations would be counted twice
     for key in ["seq_labels", "atlas_labels"]:
-        labels = [label for info in analysis.POPULATIONS.values() for label in info.get(key, [])]
+        labels = [label for info in analysis.PANELS[panel]["populations"].values() for label in info.get(key, [])]
         assert len(labels) == len(set(labels)), f"a label appears twice in {key}"
+
+
+@every_panel
+def test_every_demo_cell_type_falls_into_exactly_one_population(panel):
+    # Every cell type must land in one gate of the panel, like every live cell on FACS
+    populations = analysis.PANELS[panel]["populations"].values()
+    for cell_type in analysis.DEMO_CELL_TYPES:
+        assert sum(cell_type in info["seq_labels"] for info in populations) == 1, cell_type
+
+
+@every_panel
+def test_neutrophils_are_the_ssc_high_cd45_positive_cells(panel):
+    neutrophils = analysis.PANELS[panel]["populations"]["Neutrophils"]
+    assert neutrophils["gate"] == f"{analysis.LIVE_GATE}/CD45+/SSC high"
+    assert "Neutrophil" in neutrophils["seq_labels"]
+
+
+def test_use_panel_switches_populations_and_markers():
+    analysis.use_panel("CD45_EpCAM")
+    assert list(analysis.MARKERS) == ["CD45", "EpCAM"]
+    epcam_low = analysis.POPULATIONS["EpCAM-low (proximal tubule)"]
+    # Without CD10/CD13, proximal tubule cells are found as CD45- EpCAM low
+    assert epcam_low["gate"].endswith("/CD45-/EpCAM low") and "Proximal tubule cell" in epcam_low["seq_labels"]
+    analysis.use_panel("CD45_EpCAM_CD10_CD13")
+    assert list(analysis.MARKERS) == ["CD45", "CD10", "CD13", "EpCAM"]
+    assert analysis.POPULATIONS["Proximal tubule"]["gate"].endswith("/CD45-/CD10+ CD13+")
+    with pytest.raises(SystemExit, match="Unknown FACS panel"):
+        analysis.use_panel("CD3_CD19")
+
+
+def test_two_marker_panel_counts_podocytes_with_the_epcam_low_cells(tmp_path):
+    # CD45 + EpCAM cannot separate podocytes from proximal tubule cells (both EpCAM low),
+    # so their Flex labels belong to the same population
+    analysis.use_panel("CD45_EpCAM")
+    genes = [m["gene"] for m in analysis.MARKERS.values()]
+    lines = [f"{S},{analysis.CELL_TYPE_COLUMN}," + ",".join(genes),
+             "01,Podocyte," + ",".join("1" for _ in genes),
+             "01,Proximal tubule cell," + ",".join("1" for _ in genes)]
+    cells = analysis.load_seq(write_csv(tmp_path / "cells.csv", "\n".join(lines)),
+                              make_metadata({"01": "A"}, methods=["scRNA-seq"]))
+    assert set(cells["population"]) == {"EpCAM-low (proximal tubule)"}
+
+
+def test_missing_facs_column_message_names_the_panel():
+    with pytest.raises(SystemExit, match="FACS panel is right"):
+        analysis.get_column(pd.DataFrame({"a": [1]}), "missing", "the FACS file")
 
 
 # =============================================================================
@@ -153,16 +222,71 @@ def test_get_column_missing_stops_and_lists_real_columns():
     assert "Real column" in str(error.value)
 
 
+METHOD = analysis.METHOD_COLUMN       # "method"
+NAME = analysis.FACS_NAME_COLUMN      # "facs_name"
+
+
 def test_load_metadata_keeps_sample_ids_as_text(tmp_path):
-    path = write_csv(tmp_path / "metadata.csv", f"{S},{analysis.FACS_NAME_COLUMN},{COND}\n01,a.fcs,Healthy")
+    path = write_csv(tmp_path / "metadata.csv", f"{S},{METHOD},{NAME},{COND}\n01,FACS,a.fcs,Healthy")
     metadata = analysis.load_metadata(path)
     assert metadata.loc[0, S] == "01"        # not the number 1
 
 
-def test_load_metadata_without_facs_name_column_stops(tmp_path):
+def test_load_metadata_reads_the_method_of_each_sample(tmp_path):
+    # Different samples per method; method names written in different ways are understood
+    path = write_csv(tmp_path / "metadata.csv", "\n".join([
+        f"{S},{METHOD},{NAME},{COND}",
+        "P01,scRNA-seq,,Disease",
+        "P02,Flex,,Disease",
+        "POOL,facs,pool.fcs,Healthy pool",
+    ]))
+    metadata = analysis.load_metadata(path)
+    assert list(metadata["method"]) == ["scRNA-seq", "scRNA-seq", "FACS"]
+    assert list(analysis.samples_of(metadata, "FACS")[S]) == ["POOL"]
+
+
+def test_load_metadata_unknown_method_stops(tmp_path):
+    path = write_csv(tmp_path / "metadata.csv", f"{S},{METHOD},{NAME},{COND}\n01,microscopy,a.fcs,Healthy")
+    with pytest.raises(SystemExit, match="microscopy"):
+        analysis.load_metadata(path)
+
+
+def test_load_metadata_facs_sample_without_flowjo_name_stops(tmp_path):
+    # A FACS sample without facs_name cannot be found in the FlowJo export
+    path = write_csv(tmp_path / "metadata.csv", f"{S},{METHOD},{NAME},{COND}\nPOOL,FACS,,Healthy")
+    with pytest.raises(SystemExit, match="POOL"):
+        analysis.load_metadata(path)
+
+
+def test_load_metadata_same_sample_twice_for_one_method_stops(tmp_path):
+    path = write_csv(tmp_path / "metadata.csv", f"{S},{METHOD},{NAME},{COND}\n01,FACS,a.fcs,A\n01,FACS,b.fcs,B")
+    with pytest.raises(SystemExit, match="twice"):
+        analysis.load_metadata(path)
+
+
+def test_load_metadata_old_sheet_without_method_means_both_methods(tmp_path):
+    # An older sheet (every sample measured by both methods) is still accepted
+    path = write_csv(tmp_path / "metadata.csv", f"{S},{NAME},{COND}\n01,a.fcs,Healthy\n02,b.fcs,Disease")
+    metadata = analysis.load_metadata(path)
+    assert sorted(zip(metadata[S], metadata["method"])) == [
+        ("01", "FACS"), ("01", "scRNA-seq"), ("02", "FACS"), ("02", "scRNA-seq")]
+
+
+def test_load_metadata_old_sheet_without_facs_name_column_stops(tmp_path):
     path = write_csv(tmp_path / "metadata.csv", f"{S},{COND}\n01,Healthy")
     with pytest.raises(SystemExit):
         analysis.load_metadata(path)
+
+
+def test_choose_conditions_separately_for_each_method():
+    metadata = pd.concat([make_metadata({"p1": "Disease", "p2": "Disease"}, methods=["scRNA-seq"]),
+                          make_metadata({"pool": "Healthy pool", "p3": "Disease"}, methods=["FACS"])])
+    column, conditions = analysis.choose_conditions(metadata, COND, ["Disease"], ["Healthy pool"])
+    assert column == COND
+    assert conditions == {"scRNA-seq": ["Disease"], "FACS": ["Healthy pool"]}
+    # "Healthy pool" exists only among the FACS samples, so it cannot be chosen for scRNA-seq
+    with pytest.raises(SystemExit, match="not found among the scRNA-seq samples"):
+        analysis.choose_conditions(metadata, COND, ["Healthy pool"], ["Disease"])
 
 
 def test_load_facs_drops_flowjo_summary_rows_and_uses_sample_ids(tmp_path):
@@ -171,7 +295,7 @@ def test_load_facs_drops_flowjo_summary_rows_and_uses_sample_ids(tmp_path):
                            count_column(POPS[0]): [100, 200, 150, 70]})
     path = tmp_path / "facs.xlsx"
     export.to_excel(path, index=False)
-    facs = analysis.load_facs(path, make_metadata({"s1": "Healthy", "s2": "Disease"}))
+    facs = analysis.load_facs(path, make_metadata({"s1": "Healthy", "s2": "Disease"}, methods=["FACS"]))
     assert list(facs.index) == ["s1", "s2"]
     assert list(facs[count_column(POPS[0])]) == [100, 200]
 
@@ -185,7 +309,7 @@ def test_load_seq_translates_labels_to_populations(tmp_path):
     lines += [f"99,{labels[0]}," + ",".join("1" for _ in genes)]   # sample not in the metadata
     path = write_csv(tmp_path / "cells.csv", "\n".join(lines))
 
-    cells = analysis.load_seq(path, make_metadata({"01": "Healthy"}))
+    cells = analysis.load_seq(path, make_metadata({"01": "Healthy"}, methods=["scRNA-seq"]))
     assert list(cells["population"]) == POPS + ["Other"]   # unknown label -> "Other"
     assert set(cells[S]) == {"01"}                          # cell of sample 99 removed
 
@@ -241,25 +365,102 @@ def test_build_proportions_unknown_denominator_stops(monkeypatch):
         analysis.build_proportions(facs, make_cells({"s1": {POPS[0]: 1}}), make_metadata({"s1": "A"}), COND)
 
 
-def test_build_protein_vs_rna_needs_enough_cells_for_an_rna_mean():
-    # FACS table: every population x marker median = 500
-    facs = make_facs({"s1": [1] * len(POPS)})
-    for pop in POPS:
-        for marker in analysis.MARKERS.values():
-            facs[median_column(pop, marker["facs_parameter"])] = 500.0
+def test_build_proportions_methods_can_have_different_samples():
+    # FACS: one pool; scRNA-seq: two other people. Each keeps its own samples and condition.
+    facs = make_facs({"pool": [10] * len(POPS)})
+    cells = make_cells({"p1": {POPS[0]: 2, POPS[1]: 2}, "p2": {POPS[0]: 4}})
+    metadata = pd.concat([make_metadata({"pool": "Healthy pool"}, methods=["FACS"]),
+                          make_metadata({"p1": "Disease", "p2": "Disease"}, methods=["scRNA-seq"])])
+    table = analysis.build_proportions(facs, cells, metadata, COND)
+    assert set(zip(table[S], table["method"], table[COND])) == {
+        ("pool", "FACS", "Healthy pool"), ("p1", "scRNA-seq", "Disease"), ("p2", "scRNA-seq", "Disease")}
+    p2 = table[table[S] == "p2"].set_index("population")["proportion"]
+    assert p2[POPS[0]] == pytest.approx(1.0)
+
+
+def test_build_rna_markers_needs_enough_cells_for_an_rna_mean():
     # 12 cells of POPS[0] (values 1..12, mean 6.5) and only 5 cells of POPS[1]
     many = analysis.MIN_CELLS_FOR_RNA_MEAN + 2
     cells = make_cells({"s1": {POPS[0]: many, POPS[1]: 5}})
     for marker in analysis.MARKERS.values():
         cells[marker["gene"]] = np.r_[np.arange(1, many + 1), np.zeros(5)]
 
-    table = analysis.build_protein_vs_rna(facs, cells, make_metadata({"s1": "A"}), COND)
+    table = analysis.build_rna_markers(cells, make_metadata({"s1": "A"}, methods=["scRNA-seq"]), COND)
     first_marker = list(analysis.MARKERS)[0]
     row = table[(table["marker"] == first_marker)].set_index("population")
     assert row.loc[POPS[0], "rna_mean"] == pytest.approx((many + 1) / 2)   # mean of 1..12
     assert np.isnan(row.loc[POPS[1], "rna_mean"])                          # 5 cells: too few
     assert row.loc[POPS[1], "n_cells_rna"] == 5
-    assert (table["protein_median"] == 500.0).all()
+
+
+def test_build_facs_markers_reads_the_gate_medians():
+    facs = make_facs({"s1": [1] * len(POPS), "s2": [1] * len(POPS)})
+    for pop in POPS:
+        for marker in analysis.MARKERS.values():
+            facs[median_column(pop, marker["facs_parameter"])] = [500.0, 700.0]
+    table = analysis.build_facs_markers(facs, make_metadata({"s1": "A", "s2": "A"}, methods=["FACS"]), COND)
+    assert len(table) == 2 * len(POPS) * len(analysis.MARKERS)
+    assert sorted(set(table["protein_median"])) == [500.0, 700.0]
+
+
+def test_build_protein_vs_rna_compares_typical_levels_of_different_samples():
+    marker = list(analysis.MARKERS)[0]
+    # FACS: 3 samples with protein 100, 200, 900 -> median 200; scRNA-seq: 2 other samples, RNA 1 and 3 -> median 2
+    facs_markers = pd.DataFrame({S: ["f1", "f2", "f3"], "population": POPS[0], "marker": marker,
+                                 "protein_median": [100.0, 200.0, 900.0]})
+    rna_markers = pd.DataFrame({S: ["r1", "r2"], "population": POPS[0], "marker": marker,
+                                "rna_mean": [1.0, 3.0]})
+    table = analysis.build_protein_vs_rna(facs_markers, rna_markers).set_index(["population", "marker"])
+    row = table.loc[(POPS[0], marker)]
+    assert (row["protein_median"], row["rna_median"]) == (200.0, 2.0)
+    assert (row["n_facs_samples"], row["n_seq_samples"]) == (3, 2)
+    # Every population x marker has a row, also without data (n = 0, no value)
+    assert len(table) == len(POPS) * len(analysis.MARKERS)
+    assert table.loc[(POPS[1], marker), "n_facs_samples"] == 0
+
+
+def test_combine_per_donor_counts_every_person_once():
+    # Person P1 gave two samples (3 of 10 and 7 of 30 cells), person P2 one sample
+    sample_props = pd.DataFrame({
+        S: ["s1", "s2", "s3"], "method": "scRNA-seq", "population": POPS[0],
+        "count": [3, 7, 5], "total": [10, 30, 20], COND: "Disease"})
+    sample_props["proportion"] = sample_props["count"] / sample_props["total"]
+    metadata = make_metadata({"s1": "Disease", "s2": "Disease", "s3": "Disease"}, methods=["scRNA-seq"])
+    metadata[analysis.DONOR_COLUMN] = ["P1", "P1", "P2"]
+    table = analysis.combine_proportions_per_donor(sample_props, metadata, COND).set_index(S)
+    assert list(table.index) == ["P1", "P2"]
+    # P1: the cells of both samples added up: (3 + 7) / (10 + 30)
+    assert table.loc["P1", "proportion"] == pytest.approx(10 / 40)
+    assert table.loc["P1", "n_samples_combined"] == 2
+    assert table.loc["P2", "proportion"] == pytest.approx(5 / 20)
+
+
+def test_combine_per_donor_without_donor_column_changes_nothing():
+    sample_props = pd.DataFrame({S: ["s1", "s2"], "method": "FACS", "population": POPS[0],
+                                 "count": [1, 2], "total": [10, 10], COND: "A"})
+    table = analysis.combine_proportions_per_donor(sample_props, make_metadata({"s1": "A", "s2": "A"}), COND)
+    assert list(table[S]) == ["s1", "s2"] and (table["n_samples_combined"] == 1).all()
+
+
+def test_composition_overview_puts_pool_flex_and_atlas_side_by_side():
+    rest = [0.0] * (len(POPS) - 2)
+    proportions = pd.concat([
+        make_proportions({"pool": [0.4, 0.6] + rest}, "Healthy pool", ["FACS"]),
+        make_proportions({"P1": [0.2, 0.8] + rest, "P2": [0.4, 0.6] + rest}, "Healthy", ["scRNA-seq"]),
+    ], ignore_index=True)
+    atlas_props = analysis.build_atlas_proportions(make_atlas({"d1": {POPS[0]: 1, POPS[1]: 1}}))
+    overview = analysis.composition_overview(proportions, COND, {"FACS": ["Healthy pool"],
+                                                                 "scRNA-seq": ["Healthy"]}, atlas_props)
+    first = overview[overview["population"] == POPS[0]].set_index("label")
+    assert first.loc["Healthy pool (FACS)", "mean"] == pytest.approx(0.4)        # the pool: its own value
+    assert first.loc["Healthy (scRNA-seq)", "mean"] == pytest.approx(0.3)        # mean of 0.2 and 0.4
+    assert first.loc["Healthy (scRNA-seq)", "n"] == 2
+    assert first.loc["Reference atlas", "mean"] == pytest.approx(0.5)
+    # The means of each group add up to 1 (they are drawn as one stacked bar)
+    assert overview.groupby("label")["mean"].sum().values == pytest.approx([1, 1, 1])
+    wide = analysis.composition_overview_wide(overview)
+    assert list(wide.columns) == ["population", "Healthy pool (FACS) (n=1), %",
+                                  "Healthy (scRNA-seq) (n=2), %", "Reference atlas (n=1), %"]
 
 
 # =============================================================================
@@ -303,6 +504,16 @@ def test_correlate_curve_spearman_one_pearson_below_one():
     assert result["pearson_r"] < 1
 
 
+def test_correlate_spearman_p_is_exact_for_few_points():
+    # 4 points in perfect order: 2 of the 24 possible orderings are this extreme
+    # (perfectly rising or perfectly falling) -> exact p = 2/24, not 0
+    result = analysis.correlate([1, 2, 3, 4], [10, 20, 30, 40])
+    assert result["spearman_p"] == pytest.approx(2 / 24)
+    # Many points: scipy's own p-value is used and agrees with the rank correlation
+    x = np.arange(20)
+    assert analysis.correlate(x, x ** 2)["spearman_p"] < 1e-6
+
+
 def test_correlate_drops_missing_pairs_and_skips_impossible_tests():
     result = analysis.correlate([1, 2, np.nan, 4, 5], [2, 4, 6, np.nan, 10])
     assert result["n"] == 3                                              # 2 pairs dropped
@@ -332,24 +543,77 @@ def test_compare_groups_leaves_out_too_small_groups():
     assert [r["comparison"] for r in results] == ["A vs B"]
 
 
-def test_method_agreement_identical_methods_have_no_bias():
-    values = {f"s{i}": [0.1 * i] * len(POPS) for i in range(1, 6)}
-    table = analysis.method_agreement_stats(make_proportions(values))
-    assert table["bland_altman_bias"].values == pytest.approx(np.zeros(len(POPS)))
-    assert table["spearman_r"].values == pytest.approx(np.ones(len(POPS)))
-    # All differences are 0, so the paired Wilcoxon test is skipped
-    assert table["wilcoxon_p"].isna().all()
+def test_compare_to_reference_two_groups_uses_mann_whitney():
+    test, _, p = analysis.compare_to_reference([10, 11, 12, 13, 14], [1, 2, 3, 4, 5])
+    assert test == "Mann-Whitney U"
+    assert p == pytest.approx(2 / 252)          # completely separated groups of 5
 
 
-def test_method_agreement_finds_a_constant_shift():
-    # scRNA-seq always gives 0.05 more than FACS
-    facs = make_proportions({f"s{i}": [0.1 * i] * len(POPS) for i in range(1, 6)}, methods=["FACS"])
-    seq = facs.assign(method="scRNA-seq", proportion=facs["proportion"] + 0.05)
-    table = analysis.method_agreement_stats(pd.concat([facs, seq]))
-    assert table["bland_altman_bias"].values == pytest.approx(np.full(len(POPS), 0.05))
-    assert table["bland_altman_lower"].values == pytest.approx(np.full(len(POPS), 0.05))
-    # 5 samples, all shifted the same way: smallest possible two-sided Wilcoxon p = 2/32
-    assert table["wilcoxon_p"].values == pytest.approx(np.full(len(POPS), 2 / 32))
+def test_compare_to_reference_against_a_single_pool_uses_wilcoxon():
+    # 5 samples all above one pooled value: smallest possible two-sided Wilcoxon p = 2/32
+    test, _, p = analysis.compare_to_reference([0.3, 0.31, 0.32, 0.33, 0.34], [0.1])
+    assert test == "Wilcoxon vs reference value" and p == pytest.approx(2 / 32)
+    # The other way round: one value against a group
+    test, _, _ = analysis.compare_to_reference([0.1], [0.3, 0.31, 0.32, 0.33, 0.34])
+    assert test == "Wilcoxon of reference vs value"
+
+
+def test_compare_to_reference_too_few_samples_or_no_difference_gives_no_test():
+    assert analysis.compare_to_reference([0.1, 0.2], [0.3])[0] == ""        # 2 vs 1: too few
+    assert analysis.compare_to_reference([0.2, 0.2, 0.2], [0.2])[0] == ""   # all equal to the pool
+    assert analysis.compare_to_reference([0.1, 0.2, 0.3], [])[0] == ""      # nothing to compare with
+
+
+def test_bootstrap_interval_keeps_a_single_pool_fixed():
+    # All scRNA-seq samples are 0.3 and the pool is 0.1: every resampling gives 0.2
+    low, high = analysis.bootstrap_median_difference([0.3, 0.3, 0.3], [0.1])
+    assert (low, high) == (pytest.approx(0.2), pytest.approx(0.2))
+    # The interval contains the observed difference and widens with spread
+    low, high = analysis.bootstrap_median_difference([0.2, 0.3, 0.4, 0.5, 0.6], [0.1])
+    assert low <= 0.3 <= high and high - low > 0
+    assert np.isnan(analysis.bootstrap_median_difference([0.3], [0.1])[0])   # 1 vs 1: no interval
+
+
+def make_method_groups(seq, facs, seq_condition="Disease", facs_condition="Healthy pool"):
+    """Proportions of separate scRNA-seq and FACS samples; seq/facs = list of POPS[0] proportions."""
+    rest = [0.0] * (len(POPS) - 1)
+    return pd.concat([
+        make_proportions({f"seq{i}": [v] + rest for i, v in enumerate(seq)}, seq_condition, ["scRNA-seq"]),
+        make_proportions({f"facs{i}": [v] + rest for i, v in enumerate(facs)}, facs_condition, ["FACS"]),
+    ], ignore_index=True)
+
+
+def test_method_comparison_against_a_pool():
+    proportions = make_method_groups(seq=[0.3, 0.4, 0.5, 0.6, 0.7], facs=[0.25])
+    table = analysis.method_comparison_stats(proportions, COND, {"scRNA-seq": ["Disease"],
+                                                                  "FACS": ["Healthy pool"]})
+    row = table[table["population"] == POPS[0]].iloc[0]
+    assert row["comparison"] == "Disease (scRNA-seq) vs Healthy pool (FACS)"
+    assert (row["n_seq"], row["n_facs"]) == (5, 1)
+    assert row["seq_minus_facs"] == pytest.approx(0.5 - 0.25)
+    assert row["seq_to_facs_ratio"] == pytest.approx(2.0)
+    assert row["test"] == "Wilcoxon: scRNA-seq vs single FACS value"
+    assert row["p_value"] == pytest.approx(2 / 32)
+    assert row["seq_minus_facs_ci95_low"] <= 0.25 <= row["seq_minus_facs_ci95_high"]
+
+
+def test_method_comparison_two_groups_and_every_combination():
+    proportions = pd.concat([
+        make_method_groups(seq=[0.5, 0.6, 0.7, 0.8, 0.9], facs=[0.1, 0.2, 0.3, 0.4, 0.45], facs_condition="Disease"),
+        make_proportions({"pool": [0.2] + [0.0] * (len(POPS) - 1)}, "Healthy pool", ["FACS"]),
+    ], ignore_index=True)
+    table = analysis.method_comparison_stats(proportions, COND, {"scRNA-seq": ["Disease"],
+                                                                  "FACS": ["Disease", "Healthy pool"]})
+    # 1 scRNA-seq condition x 2 FACS conditions x every population
+    assert len(table) == 2 * len(POPS)
+    row = table[(table["population"] == POPS[0]) & (table["facs_group"] == "Disease")].iloc[0]
+    assert row["test"] == "Mann-Whitney U" and row["p_value"] == pytest.approx(2 / 252)
+    # Populations that are 0 everywhere: no difference, no test, no ratio (cannot divide by 0)
+    empty = table[table["population"] == POPS[1]]
+    assert (empty["test"] == "").all() and empty["p_value"].isna().all()
+    assert empty["seq_to_facs_ratio"].isna().all()
+    # Only POPS[0] was tested: once against the FACS Disease group, once against the pool
+    assert table["q_value_fdr"].notna().sum() == 2
 
 
 def test_condition_stats_compares_conditions_and_flags_significance():
@@ -368,6 +632,33 @@ def test_condition_stats_compares_conditions_and_flags_significance():
 def test_condition_stats_with_one_condition_gives_empty_table():
     table = pd.DataFrame({"population": [POPS[0]] * 3, "value": [1, 2, 3], COND: ["Healthy"] * 3})
     assert analysis.condition_stats(table, "value", ["population"], COND, ["Healthy"]).empty
+
+
+def test_condition_stats_compares_conditions_only_within_one_method():
+    # scRNA-seq has Healthy and Disease; FACS has Disease and a single pool -> only scRNA-seq is tested
+    rows = ([("scRNA-seq", "Healthy", v) for v in [1, 2, 3]] + [("scRNA-seq", "Disease", v) for v in [7, 8, 9]] +
+            [("FACS", "Disease", v) for v in [4, 5, 6]] + [("FACS", "Healthy pool", 1)])
+    table = pd.DataFrame(rows, columns=["method", COND, "value"]).assign(population=POPS[0])
+    result = analysis.condition_stats(table, "value", ["population", "method"], COND,
+                                      ["Healthy", "Disease", "Healthy pool"])
+    assert list(result["method"]) == ["scRNA-seq"]
+    assert result.loc[0, "comparison"] == "Healthy vs Disease"
+
+
+def test_protein_rna_stats_same_order_of_populations_gives_r_one():
+    # Every marker: protein and RNA rise together over the populations (different units)
+    rows = [{"population": pop, "marker": m, "protein_median": 1000.0 * (i + 1), "rna_median": 0.5 * (i + 1)}
+            for m in analysis.MARKERS for i, pop in enumerate(POPS)]
+    table = analysis.protein_rna_stats(pd.DataFrame(rows)).set_index("marker")
+    assert table["spearman_r"].values == pytest.approx(np.ones(len(analysis.MARKERS) + 1))
+    # One row per marker (n = number of populations) + all markers together after 0-1 scaling
+    assert table.loc[list(analysis.MARKERS)[0], "n"] == len(POPS)
+    assert table.loc["All markers (scaled)", "n"] == len(POPS) * len(analysis.MARKERS)
+
+
+def test_scale_0_1():
+    assert list(analysis.scale_0_1(pd.Series([10.0, 20.0, 30.0]))) == [0, 0.5, 1]
+    assert analysis.scale_0_1(pd.Series([5.0, 5.0])).isna().all()        # no spread: no scale
 
 
 # =============================================================================
@@ -438,15 +729,30 @@ def test_atlas_comparison_uses_mann_whitney_with_enough_donors_else_wilcoxon():
     many_donors = analysis.build_atlas_proportions(
         make_atlas({f"d{i}": {POPS[0]: 9, POPS[1]: i} for i in range(1, 5)}))
 
-    table = analysis.atlas_comparison_stats(proportions, one_donor, COND, ["Healthy"])
+    conditions = {"scRNA-seq": ["Healthy"], "FACS": ["Healthy"]}
+
+    table = analysis.atlas_comparison_stats(proportions, one_donor, COND, conditions)
     first = table[table["population"] == POPS[0]].iloc[0]
     assert first["test"] == "Wilcoxon vs atlas proportion"
     assert first["atlas_proportion"] == pytest.approx(0.9)
     # difference = median of our samples (0.25) minus the atlas (0.9)
     assert first["difference"] == pytest.approx(0.25 - 0.9)
 
-    table = analysis.atlas_comparison_stats(proportions, many_donors, COND, ["Healthy"])
+    table = analysis.atlas_comparison_stats(proportions, many_donors, COND, conditions)
     assert table.loc[table["population"] == POPS[0], "test"].iloc[0] == "Mann-Whitney U vs atlas donors"
+
+
+def test_atlas_comparison_single_pool_against_the_donors():
+    # One FACS pool: the atlas donors are tested against the pool's value
+    proportions = make_proportions({"pool": [0.5] + [0.0] * (len(POPS) - 1)}, "Healthy pool", ["FACS"])
+    donors = analysis.build_atlas_proportions(
+        make_atlas({f"d{i}": {POPS[0]: 9, POPS[1]: i} for i in range(1, 6)}))
+    table = analysis.atlas_comparison_stats(proportions, donors, COND,
+                                            {"scRNA-seq": [], "FACS": ["Healthy pool"]})
+    row = table[table["population"] == POPS[0]].iloc[0]
+    assert (row["method"], row["n_samples"]) == ("FACS", 1)
+    assert row["test"] == "Wilcoxon of atlas donors vs sample value"
+    assert row["p_value"] == pytest.approx(2 / 32)     # all 5 donors above 0.5
 
 
 def test_build_marker_profiles_scales_each_marker_from_0_to_1():

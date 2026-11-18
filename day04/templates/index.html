@@ -2,7 +2,9 @@
 {% block content %}
 <section class="card">
   <h1>1. Upload your data</h1>
-  <p>The three files from the same samples, plus two optional files (a reference atlas and a single-cell imaging export). The script's comments describe each format.</p>
+  <p>Three required files plus two optional ones (a reference atlas and a single-cell imaging export). The script's comments describe each format.
+     FACS and scRNA-seq do not have to come from the same samples: the sample sheet says, for every sample, which method measured it
+     (column <code>{{ analysis.METHOD_COLUMN }}</code>: FACS or scRNA-seq). A pool of urine from several people is one FACS sample.</p>
   <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
     <label>Sample sheet <code>{{ uploads.metadata[0] }}</code>
       <input type="file" name="metadata" accept=".csv" required></label>
@@ -24,7 +26,8 @@
 
 <section class="card">
   <h2>No data yet?</h2>
-  <p>Make a made-up demo dataset (10 samples, 5 Healthy and 5 Disease, plus a reference atlas of 8 healthy donors and single-cell imaging data) and analyse that instead.</p>
+  <p>Make a made-up demo dataset and analyse that instead: scRNA-seq of 10 people (5 Healthy, 5 Disease) and FACS of other people
+     (one pool of healthy urine and 6 Disease patients), plus a reference atlas of 8 healthy donors and single-cell imaging data.</p>
   <form action="{{ url_for('upload') }}" method="post">
     <button type="submit" name="demo" value="1" class="secondary">Use demo data</button>
   </form>
@@ -33,17 +36,23 @@
 <section class="card">
   <h2>Current settings</h2>
   <p>These come from the SETTINGS section of <code>facs_vs_scrnaseq.py</code>. Edit them there and restart the app.</p>
+  <p>Default FACS panel: <b>{{ analysis.PANELS[analysis.FACS_PANEL].description }}</b> (you can choose the panel on the next page).
+     Both panels gate live cells on Fixable Yellow, and split CD45+ cells by side scatter (SSC high = neutrophils).</p>
+  {% for key, panel in analysis.PANELS.items() %}
+  <h3>{{ panel.description }} <span class="muted">(<code>{{ key }}</code>)</span></h3>
   <table class="data">
     <tr><th>Population</th><th>FlowJo gate</th><th>scRNA-seq labels</th><th>Atlas labels</th></tr>
-    {% for name, info in analysis.POPULATIONS.items() %}
+    {% for name, info in panel.populations.items() %}
     <tr><td>{{ name }}</td><td><code>{{ info.gate }}</code></td><td>{{ info.seq_labels | join(", ") }}</td>
         <td>{{ (info.atlas_labels or info.seq_labels) | join(", ") }}</td></tr>
     {% endfor %}
   </table>
+  {% endfor %}
   <table class="data">
-    <tr><th>Marker</th><th>Gene</th><th>FlowJo channel</th></tr>
-    {% for name, info in analysis.MARKERS.items() %}
-    <tr><td>{{ name }}</td><td><i>{{ info.gene }}</i></td><td><code>{{ info.facs_parameter }}</code></td></tr>
+    <tr><th>Marker</th><th>Gene</th><th>FlowJo channel</th><th>Panels</th></tr>
+    {% for name, info in analysis.ALL_MARKERS.items() %}
+    <tr><td>{{ name }}</td><td><i>{{ info.gene }}</i></td><td><code>{{ info.facs_parameter }}</code></td>
+        <td>{% for key, panel in analysis.PANELS.items() if name in panel.markers %}{{ panel.description.split(" (")[0] }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
     {% endfor %}
   </table>
   <p>Imaging features: {% for f in analysis.IMAGING_FEATURES %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %} · outlier cut-off: robust z > {{ analysis.OUTLIER_CUTOFF }}<br>

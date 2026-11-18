@@ -3,8 +3,10 @@
 {% block content %}
 <section class="card">
   <h1>3. Results</h1>
-  <p>Column <b>{{ info.condition_column }}</b> with conditions <b>{{ info.conditions | join(", ") }}</b> ·
-     {{ info.n_facs_samples }} FACS samples · {{ info.n_cells }} cells from {{ info.n_seq_samples }} scRNA-seq samples ·
+  <p>FACS panel <b>{{ info.panel_description }}</b> · Column <b>{{ info.condition_column }}</b> ·
+     scRNA-seq: <b>{{ info.conditions["scRNA-seq"] | join(", ") }}</b> ({{ info.n_cells }} cells from {{ info.n_seq_samples }} samples of {{ info.n_seq_people }} people) ·
+     FACS: <b>{{ info.conditions["FACS"] | join(", ") }}</b> ({{ info.n_facs_samples }} samples)<br>
+     {{ n_method_significant }} significant scRNA-seq vs FACS differences ·
      {{ n_significant }} significant condition differences in proportions (FDR &lt; {{ alpha }})</p>
   <p class="actions">
     <a class="button" href="{{ url_for('download_all', run_id=run_id) }}">Download all results (.zip)</a>
@@ -34,6 +36,13 @@
   </ul>
   {% endif %}
 
+  {% if section.overview %}
+    <h3>Composition overview: average % of each population per group</h3>
+    <div class="table-wrap">{{ section.overview | safe }}</div>
+    <p class="muted">n = number of samples (FACS), people (scRNA-seq, samples of one person combined) or atlas donors.
+       A pool is a single sample, so its numbers are its own proportions. Plot A4 below shows the same numbers.</p>
+    <h3>Tests: each scRNA-seq group against each FACS group</h3>
+  {% endif %}
   {% if section.table %}
     <div class="table-wrap">{{ section.table | safe }}</div>
     {% if section.column_help %}
@@ -45,7 +54,7 @@
     </details>
     {% endif %}
   {% elif section.letter == "B" %}
-    <p class="muted">No tests between conditions. This needs at least two conditions, each with at least the minimum number of samples.</p>
+    <p class="muted">No tests between conditions. This needs at least two conditions measured by the same method, each with at least {{ min_samples }} samples (a single pool cannot be compared with other conditions here; section A compares it with the scRNA-seq samples).</p>
   {% elif section.letter == "E" %}
     <p class="muted">No reference atlas was given, so this section was skipped. Upload a reference atlas (.csv) on the start page to compare your data with it.</p>
   {% elif section.letter == "F" %}

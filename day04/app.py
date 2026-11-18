@@ -9,8 +9,11 @@ statistics and the plots) stays in facs_vs_scrnaseq.py. This file only:
   1. receives the three input files (+ the optional reference atlas and per-cell
      imaging export) through an
      upload form (or makes demo data)
-  2. lets you pick the condition column and conditions with checkboxes
-     (instead of typing numbers in the terminal)
+  2. lets you pick the FACS panel (which antibodies were used), the condition
+     column, and the conditions to include for the
+     scRNA-seq samples and for the FACS samples, with checkboxes (instead of
+     typing numbers in the terminal). The two methods can have different
+     samples and conditions, e.g. scRNA-seq 'Disease' vs a FACS 'Healthy pool'.
   3. calls run_analysis() from facs_vs_scrnaseq.py
   4. shows the summary tables and plots in the browser and offers the CSVs
      and PNGs for download
@@ -24,7 +27,7 @@ HOW TO RUN
   Every analysis gets its own folder in runs/<run id>/ with:
       data/      the uploaded (or demo) input files
       results/   the tables and plots written by facs_vs_scrnaseq.py
-      run.json   which conditions were chosen + the messages the analysis printed
+      run.json   which conditions were chosen (per method) + the messages the analysis printed
 
   The SETTINGS (gate paths, channel names, cell-type labels, ...) are still
   edited in facs_vs_scrnaseq.py - the web page shows the current values.
@@ -71,9 +74,9 @@ OPTIONAL_UPLOADS = {"atlas", "facs_cells"}
 
 # Headings for the plots and tables, by the letter their file name starts with
 SECTIONS = {
-    "A": "A. Proportions: FACS vs scRNA-seq",
+    "A": "A. Proportions: scRNA-seq vs FACS",
     "B": "B. Proportions between conditions",
-    "C": "C. Protein vs RNA",
+    "C": "C. Protein vs RNA per population",
     "D": "D. S8 imaging features",
     "E": "E. Comparison with the reference atlas",
     "F": "F. Imaging profiles per cell type",
@@ -118,15 +121,37 @@ def call_analysis(function, *args, **kwargs):
             return None, log.getvalue(), str(stop.code).strip()
 
 
+# The two methods on the setup page: (method, form field name, heading)
+METHOD_FIELDS = [("scRNA-seq", "seq_conditions", "scRNA-seq samples"),
+                 ("FACS", "facs_conditions", "FACS samples")]
+
+
 def condition_options(metadata):
-    """For every metadata column that could hold conditions: its values and sample counts."""
+    """
+    For every metadata column that could hold conditions: for each method, its
+    values and how many samples of that method have each value.
+    metadata = the sample sheet as returned by analysis.load_metadata().
+    """
     options = []
-    for column in metadata.columns:
-        if column in (analysis.SAMPLE_COLUMN, analysis.FACS_NAME_COLUMN):
-            continue
-        counts = metadata[column].value_counts(sort=False)
-        options.append({"column": column, "values": [(v, int(n)) for v, n in counts.items()]})
+    for column in analysis.condition_candidates(metadata):
+        methods = []
+        for method, field, heading in METHOD_FIELDS:
+            samples = analysis.samples_of(metadata, method)
+            counts = samples[column].value_counts(sort=False)
+            # How many different people those samples come from (donor_id; none = one person per sample)
+            people = analysis.donor_of_each_row(samples, metadata).groupby(samples[column]).nunique()
+            methods.append({"method": method, "field": field, "heading": heading,
+                            "values": [(v, int(n), int(people[v])) for v, n in counts.items()]})
+        options.append({"column": column, "methods": methods})
     return options
+
+
+def last_panel(folder):
+    """The FACS panel this run used last time (when re-running), else the default from SETTINGS."""
+    try:
+        return json.loads((folder / "run.json").read_text())["panel"]
+    except (OSError, KeyError, ValueError):
+        return analysis.FACS_PANEL
 
 
 def table_html(table, columns=None):
@@ -202,8 +227,10 @@ def setup(run_id, error=None):
     if load_error:
         abort(404)
     options = condition_options(metadata)
+    n_samples = {method: len(analysis.samples_of(metadata, method)) for method in analysis.METHODS}
     return render_template("setup.html", run_id=run_id, options=options,
-                           n_samples=len(metadata), error=error)
+                           n_samples=n_samples, error=error,
+                           panels=analysis.PANELS, current_panel=last_panel(folder))
 
 
 @app.post("/run/<run_id>/analyse")
@@ -211,27 +238,39 @@ def analyse(run_id):
     """Run the analysis with the chosen conditions, then show the results page."""
     folder = run_folder(run_id)
     column = request.form.get("condition_column")
-    conditions = request.form.getlist("conditions")
+    panel = request.form.get("panel", analysis.FACS_PANEL)
+    if panel not in analysis.PANELS:
+        return setup(run_id, error="Please choose the FACS panel."), 400
 
-    metadata = pd.read_csv(folder / "data" / analysis.METADATA_FILE, dtype=str)
-    if column not in [option["column"] for option in condition_options(metadata)]:
+    metadata, _, load_error = call_analysis(analysis.load_metadata, folder / "data" / analysis.METADATA_FILE)
+    if load_error:
+        abort(404)
+    option = next((o for o in condition_options(metadata) if o["column"] == column), None)
+    if option is None:
         return setup(run_id, error="Please choose a condition column."), 400
-    if not conditions:   # nothing ticked = all conditions (like pressing Enter in the terminal)
-        conditions = list(metadata[column].value_counts(sort=False).index)
+    # The ticked conditions of each method; nothing ticked = all conditions of that
+    # method (like pressing Enter in the terminal)
+    chosen = {}
+    for entry in option["methods"]:
+        ticked = request.form.getlist(entry["field"])
+        chosen[entry["method"]] = ticked or [value for value, *_ in entry["values"]]
 
     results_dir = folder / "results"
     shutil.rmtree(results_dir, ignore_errors=True)    # re-running replaces old results
     result, log, error = call_analysis(analysis.run_analysis, folder / "data", results_dir,
-                                       column, conditions)
+                                       column, chosen["scRNA-seq"], chosen["FACS"], panel)
     if error:
         return setup(run_id, error=error), 400
 
     (folder / "run.json").write_text(json.dumps({
+        "panel": result["panel"],
+        "panel_description": analysis.PANELS[result["panel"]]["description"],
         "condition_column": result["condition_column"],
-        "conditions": result["conditions"],
+        "conditions": result["conditions"],          # {"scRNA-seq": [...], "FACS": [...]}
         "n_facs_samples": int(result["n_facs_samples"]),
         "n_cells": int(result["n_cells"]),
         "n_seq_samples": int(result["n_seq_samples"]),
+        "n_seq_people": int(result["n_seq_people"]),
         "log": log,
     }, indent=2))
     return redirect(url_for("results", run_id=run_id))
@@ -246,19 +285,19 @@ def results(run_id):
         return redirect(url_for("setup", run_id=run_id))
     info = json.loads((folder / "run.json").read_text())
 
+    comparison = read_result(results_dir, "A_method_comparison_stats.csv")
     by_condition = read_result(results_dir, "B_condition_tests_proportions.csv")
     rna_stats = read_result(results_dir, "C_protein_vs_rna_stats.csv")
     # For each section: the summary table and which of its columns to show
     tables = {
-        "A": (read_result(results_dir, "A_method_agreement_stats.csv"),
-              ["population", "n", "spearman_r", "spearman_q_fdr", "pearson_r",
-               "bland_altman_bias", "bland_altman_lower", "bland_altman_upper",
-               "wilcoxon_q_fdr"]),
+        "A": (comparison,
+              ["comparison", "population", "n_seq", "n_facs", "median_seq", "median_facs",
+               "seq_minus_facs", "seq_minus_facs_ci95_low", "seq_minus_facs_ci95_high",
+               "seq_to_facs_ratio", "test", "q_value_fdr", "significant"]),
         "B": (by_condition,
               ["population", "method", "test", "comparison", "p_value",
                "q_value_fdr", "significant"]),
-        "C": (rna_stats[rna_stats["population"] == "All populations"] if rna_stats is not None else None,
-              ["marker", "n", "spearman_r", "spearman_q_fdr", "pearson_r", "pearson_q_fdr"]),
+        "C": (rna_stats, ["marker", "n", "spearman_r", "spearman_q_fdr", "pearson_r", "pearson_q_fdr"]),
         "D": (read_result(results_dir, "D_imaging_tests_between_populations.csv"),
               ["feature", "test", "comparison", "p_value", "q_value_fdr", "significant"]),
         "E": (read_result(results_dir, "E_atlas_proportion_tests.csv"),
@@ -269,6 +308,11 @@ def results(run_id):
                "median", "cv_percent", "n_outlier_samples"]),
     }
     n_significant = int(by_condition["significant"].sum()) if by_condition is not None else 0
+    n_method_significant = int(comparison["significant"].sum()) if comparison is not None else 0
+
+    # Section A also shows the composition overview: every group's average proportions side by side
+    overview = read_result(results_dir, "A_composition_overview.csv")
+    overview_html = table_html(analysis.composition_overview_wide(overview)) if overview is not None else None
 
     files = sorted(p.name for p in results_dir.iterdir())
     sections = []
@@ -277,6 +321,7 @@ def results(run_id):
         shown = [] if table is None or table.empty else [c for c in columns if c in table.columns]
         sections.append({
             "letter": letter, "title": title,
+            "overview": overview_html if letter == "A" else None,
             "table": table_html(table, columns),
             # explanations: the question of the section, notes, and the meaning of each column shown
             "help": explanations.SECTION_HELP.get(letter),
@@ -287,7 +332,8 @@ def results(run_id):
             "csvs": [f for f in files if f.startswith(letter) and f.endswith(".csv")],
         })
     return render_template("results.html", run_id=run_id, info=info, sections=sections,
-                           n_significant=n_significant, alpha=analysis.ALPHA,
+                           n_significant=n_significant, n_method_significant=n_method_significant,
+                           alpha=analysis.ALPHA, min_samples=analysis.MIN_SAMPLES_PER_GROUP,
                            general_help=explanations.GENERAL_HELP)
 
 

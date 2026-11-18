@@ -21,10 +21,12 @@ import facs_vs_scrnaseq as analysis
 
 HERE = Path(__file__).resolve().parent
 EXPECTED_FILES = [
-    "A1_proportions_stacked.png", "A2_proportions_FACS_vs_seq.png", "A3_bland_altman.png",
-    "A_method_agreement_stats.csv", "A_proportions.csv",
+    "A1_proportions_stacked.png", "A2_proportions_by_method.png", "A3_method_difference.png",
+    "A4_composition_overview.png", "A_composition_overview.csv",
+    "A_method_comparison_stats.csv", "A_proportions.csv", "A_proportions_per_sample.csv",
     "B1_proportions_by_condition.png", "B_condition_tests_proportions.csv",
-    "C1_protein_vs_rna.png", "C_protein_vs_rna.csv", "C_protein_vs_rna_stats.csv",
+    "C1_protein_vs_rna.png", "C_protein_per_sample.csv", "C_rna_per_sample.csv",
+    "C_protein_vs_rna.csv", "C_protein_vs_rna_stats.csv",
     "D1_imaging_features.png", "D_imaging_features.csv",
     "D_imaging_tests_between_conditions.csv", "D_imaging_tests_between_populations.csv",
     "E1_atlas_proportions.png", "E2_atlas_composition_difference.png", "E3_atlas_marker_profiles.png",
@@ -41,6 +43,19 @@ ATLAS_FILES = [f for f in EXPECTED_FILES if f.startswith("E")]
 CELL_LEVEL_FILES = ["F6_imaging_cell_distributions.png", "F7_imaging_cell_outliers.png",
                     "F8_imaging_morphology_map.png", "F_imaging_cell_summary.csv"]
 SAMPLE_LEVEL_F_FILES = [f for f in EXPECTED_FILES if f.startswith("F") and f not in CELL_LEVEL_FILES]
+
+# The demo data: scRNA-seq of 12 samples from 8 people (4 Healthy, 4 Disease) and
+# FACS of OTHER people (one healthy pool + 6 Disease patients)
+SEQ_CONDITIONS = ["Healthy", "Disease"]
+FACS_CONDITIONS = ["Healthy pool", "Disease"]
+
+
+@pytest.fixture(autouse=True)
+def default_panel():
+    """Every test starts and ends with the default FACS panel (some tests switch panels)."""
+    analysis.use_panel(analysis.FACS_PANEL)
+    yield
+    analysis.use_panel(analysis.FACS_PANEL)
 
 
 @pytest.fixture
@@ -61,24 +76,35 @@ def client(tmp_path, monkeypatch):
 
 def test_run_analysis_writes_all_files(demo_data, tmp_path):
     out = tmp_path / "results"
-    result = analysis.run_analysis(demo_data, out, "condition", ["Healthy", "Disease"])
+    result = analysis.run_analysis(demo_data, out, "condition", SEQ_CONDITIONS, FACS_CONDITIONS)
     assert sorted(p.name for p in out.iterdir()) == sorted(EXPECTED_FILES)
-    assert result["n_facs_samples"] == 10
-    assert list(result["agreement"]["population"]) == list(analysis.POPULATIONS)
+    assert (result["n_facs_samples"], result["n_seq_samples"], result["n_seq_people"]) == (7, 12, 8)
+    # the statistics count PEOPLE: samples of the same person are combined
+    assert set(result["comparison"]["n_seq"]) == {4}
+    # every scRNA-seq condition against every FACS condition, for every population
+    comparison = result["comparison"]
+    assert len(comparison) == len(SEQ_CONDITIONS) * len(FACS_CONDITIONS) * len(analysis.POPULATIONS)
+    pool = comparison[comparison["facs_group"] == "Healthy pool"]
+    assert (pool["n_facs"] == 1).all()
+    assert set(pool["test"]) == {"Wilcoxon: scRNA-seq vs single FACS value"}
     assert not result["by_condition"].empty
 
 
-def test_run_analysis_one_condition_skips_condition_plot(demo_data, tmp_path):
+def test_run_analysis_one_condition_per_method_skips_condition_plot(demo_data, tmp_path):
     out = tmp_path / "results"
-    result = analysis.run_analysis(demo_data, out, "condition", ["Healthy"])
+    result = analysis.run_analysis(demo_data, out, "condition", ["Disease"], ["Disease"])
     assert not (out / "B1_proportions_by_condition.png").exists()
     assert result["by_condition"].empty
-    assert result["n_facs_samples"] == 5
+    assert result["n_facs_samples"] == 6
+    assert set(result["comparison"]["test"]) == {"Mann-Whitney U"}
 
 
 def test_run_analysis_unknown_condition_stops_with_message(demo_data, tmp_path):
     with pytest.raises(SystemExit, match="not found"):
-        analysis.run_analysis(demo_data, tmp_path / "results", "condition", ["Nope"])
+        analysis.run_analysis(demo_data, tmp_path / "results", "condition", ["Nope"], FACS_CONDITIONS)
+    # "Healthy pool" is a FACS condition only
+    with pytest.raises(SystemExit, match="scRNA-seq"):
+        analysis.run_analysis(demo_data, tmp_path / "results", "condition", ["Healthy pool"], FACS_CONDITIONS)
 
 
 def test_command_line_still_works(tmp_path):
@@ -86,7 +112,7 @@ def test_command_line_still_works(tmp_path):
     script = tmp_path / "facs_vs_scrnaseq.py"
     script.write_text((HERE / "facs_vs_scrnaseq.py").read_text())
     done = subprocess.run([sys.executable, str(script), "--demo", "--condition-column", "condition",
-                           "--conditions", "Healthy", "Disease"],
+                           "--seq-conditions", *SEQ_CONDITIONS, "--facs-conditions", *FACS_CONDITIONS],
                           capture_output=True, text=True, cwd=tmp_path)
     assert done.returncode == 0, done.stderr
     assert "Done." in done.stdout
@@ -108,10 +134,14 @@ def test_demo_run_end_to_end(client):
     run_id = setup_url.rstrip("/").split("/")[-1]
 
     setup_page = client.get(setup_url).get_data(as_text=True)
-    assert "Healthy" in setup_page and "(5 samples)" in setup_page
+    assert "scRNA-seq samples" in setup_page and "FACS samples" in setup_page
+    assert "Healthy pool" in setup_page and "(1 sample)" in setup_page
+    # 6 Healthy Flex samples come from 4 people; the 6 FACS Disease samples are 6 people
+    assert "(6 samples from 4 people)" in setup_page and "(6 samples)" in setup_page
 
     response = client.post(f"/run/{run_id}/analyse",
-                           data={"condition_column": "condition", "conditions": ["Healthy", "Disease"]})
+                           data={"condition_column": "condition", "seq_conditions": SEQ_CONDITIONS,
+                                 "facs_conditions": FACS_CONDITIONS})
     assert response.status_code == 302
 
     page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
@@ -137,10 +167,10 @@ def test_upload_own_files(client, demo_data):
     assert response.status_code == 302
     run_id = response.headers["Location"].rstrip("/").split("/")[-1]
 
-    # no condition ticked = all conditions, like pressing Enter in the terminal
+    # no condition ticked = all conditions of each method, like pressing Enter in the terminal
     client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
     page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
-    assert "Healthy, Disease" in page
+    assert "Healthy, Disease" in page and "Healthy pool, Disease" in page
     # the atlas is optional: without it section E is skipped with a message
     assert "No reference atlas was given" in page
     assert not any(name in page for name in ATLAS_FILES)
@@ -177,7 +207,7 @@ def test_robust_z_flags_an_outlier():
 def test_no_imaging_features_skips_sections_d_and_f(demo_data, tmp_path, monkeypatch):
     monkeypatch.setattr(analysis, "IMAGING_FEATURES", [])
     out = tmp_path / "results"
-    analysis.run_analysis(demo_data, out, "condition", ["Healthy", "Disease"])
+    analysis.run_analysis(demo_data, out, "condition", SEQ_CONDITIONS, FACS_CONDITIONS)
     made = {p.name for p in out.iterdir()}
     assert not any(name.startswith(("D", "F")) for name in made)
     assert "A1_proportions_stacked.png" in made
@@ -214,7 +244,7 @@ def test_atlas_summary_table_gives_same_proportions(demo_data, tmp_path):
     (demo_data / analysis.ATLAS_FILE).unlink()
     (tmp_path / "summary_atlas.csv").rename(demo_data / analysis.ATLAS_FILE)
     out = tmp_path / "results"
-    analysis.run_analysis(demo_data, out, "condition", ["Healthy", "Disease"])
+    analysis.run_analysis(demo_data, out, "condition", SEQ_CONDITIONS, FACS_CONDITIONS)
     made = {p.name for p in out.iterdir()}
     assert "E1_atlas_proportions.png" in made and "E2_atlas_composition_difference.png" in made
     assert "E3_atlas_marker_profiles.png" not in made
@@ -256,6 +286,52 @@ def test_wrong_gate_name_shows_error_instead_of_crashing(client, monkeypatch):
     response = client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
     assert response.status_code == 400
     assert "Wrong/Gate | Count" in response.get_data(as_text=True)
+
+
+def test_two_marker_panel_end_to_end(demo_data, tmp_path):
+    """With CD45 + EpCAM only: other populations and markers, same outputs."""
+    out = tmp_path / "results"
+    result = analysis.run_analysis(demo_data, out, "condition", SEQ_CONDITIONS, FACS_CONDITIONS,
+                                   panel="CD45_EpCAM")
+    assert sorted(p.name for p in out.iterdir()) == sorted(EXPECTED_FILES)
+    assert result["panel"] == "CD45_EpCAM"
+    assert list(dict.fromkeys(result["comparison"]["population"])) == [
+        "Neutrophils", "Other immune", "EpCAM-low (proximal tubule)", "EpCAM-high epithelium"]
+    assert list(result["rna_stats"]["marker"]) == ["CD45", "EpCAM", "All markers (scaled)"]
+    # the pool, the Flex groups and the atlas side by side
+    assert set(result["overview"]["label"]) == {"Healthy pool (FACS)", "Disease (FACS)", "Healthy (scRNA-seq)",
+                                                "Disease (scRNA-seq)", "Reference atlas"}
+
+
+def test_web_panel_choice(client):
+    run_id = client.post("/upload", data={"demo": "1"}).headers["Location"].split("/")[-1]
+    setup_page = client.get(f"/run/{run_id}").get_data(as_text=True)
+    assert "CD45 + EpCAM (+ Fixable Yellow)" in setup_page and "CD45 + EpCAM + CD10 + CD13" in setup_page
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition", "panel": "CD45_EpCAM"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    assert "FACS panel <b>CD45 + EpCAM (+ Fixable Yellow)</b>" in page
+    assert "EpCAM-low (proximal tubule)" in page and "Composition overview" in page
+    # re-running keeps the chosen panel selected
+    setup_again = " ".join(client.get(f"/run/{run_id}").get_data(as_text=True).split())
+    assert 'value="CD45_EpCAM" checked' in setup_again
+    assert client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition",
+                                                       "panel": "nope"}).status_code == 400
+
+
+def test_old_sample_sheet_without_method_column_still_runs(demo_data, tmp_path):
+    """An older sheet (same samples measured by both methods, no method column) still works."""
+    metadata = pd.read_csv(demo_data / analysis.METADATA_FILE, dtype=str)
+    facs = metadata[metadata["method"] == "FACS"]
+    seq_ids = metadata.loc[metadata["method"] == "scRNA-seq", analysis.SAMPLE_COLUMN].tolist()
+    # Pretend the first 7 scRNA-seq samples were the FACS samples: rename the cells to match
+    cells = pd.read_csv(demo_data / analysis.SEQ_FILE, dtype={analysis.SAMPLE_COLUMN: str})
+    cells[analysis.SAMPLE_COLUMN] = cells[analysis.SAMPLE_COLUMN].map(
+        dict(zip(seq_ids, facs[analysis.SAMPLE_COLUMN])))
+    cells.dropna(subset=[analysis.SAMPLE_COLUMN]).to_csv(demo_data / analysis.SEQ_FILE, index=False)
+    facs.drop(columns="method").to_csv(demo_data / analysis.METADATA_FILE, index=False)
+
+    result = analysis.run_analysis(demo_data, tmp_path / "results", "condition", FACS_CONDITIONS, FACS_CONDITIONS)
+    assert (result["n_facs_samples"], result["n_seq_samples"]) == (7, 7)
 
 
 def test_unknown_or_unsafe_run_ids_give_404(client):

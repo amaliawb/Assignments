@@ -4,7 +4,7 @@ explanations.py
 
 The help texts shown on the results page of the web app (app.py):
   - GENERAL_HELP : how to read p-values, q-values and box plots (top of the page)
-  - SECTION_HELP : for each section A-D, the question it answers and what to keep in mind
+  - SECTION_HELP : for each section A-F, the question it answers and what to keep in mind
   - COLUMN_HELP  : what each column of the summary tables means
   - PLOT_HELP    : for each plot, how to read it and what it tells you
 
@@ -24,8 +24,25 @@ GENERAL_HELP = [
      "discovery rate). Use q, not p, to decide what is significant: here q < 0.05."),
     ("Not significant",
      "Does NOT prove there is no difference. With few samples the tests have little power: "
-     "with 3 samples per group a Mann-Whitney test can never reach p < 0.05. Look at the "
-     "dots in the plots as well."),
+     "with 3 samples per group a Mann-Whitney test can never reach p < 0.05, and 5 samples "
+     "compared with ONE pooled sample can never reach p < 0.05 either (the smallest possible "
+     "p is 0.0625; 6 samples are needed). Look at the dots in the plots as well."),
+    ("FACS panel",
+     "Which antibodies were used on FACS: CD45 + EpCAM, or CD45 + EpCAM + CD10 + CD13 (always with "
+     "the Fixable Yellow live/dead dye). The panel decides the populations: both split CD45+ cells "
+     "into neutrophils (high side scatter) and other immune cells; CD45- cells are split by EpCAM "
+     "(high = distal tubule, collecting duct, urothelium; low = proximal tubule) and, with the "
+     "4-marker panel, first by CD10/CD13 (proximal tubule). Each population is compared with the "
+     "Flex cell types that would fall into its gate."),
+    ("People, not samples",
+     "Several samples of the same person (donor_id column of the sample sheet) are combined into one "
+     "before any statistics: their cells are added up. Samples of one person are not independent, so "
+     "every person counts once (e.g. 12 Flex samples from 8 people = 8 values)."),
+    ("Different samples in each method",
+     "FACS and scRNA-seq were measured on different samples (e.g. a pool of healthy urine, or "
+     "other patients). The methods are therefore compared as GROUPS (unpaired tests). A "
+     "difference between them can come from the method OR from the different people: compare "
+     "groups that should be biologically alike (e.g. Healthy vs Healthy pool) to judge the method."),
     ("Box plots",
      "The box holds the middle 50% of the samples, the black line is the median, the "
      "whiskers show the spread of the rest. Every dot is one sample - with small groups "
@@ -41,39 +58,63 @@ GENERAL_HELP = [
 # -----------------------------------------------------------------------------
 SECTION_HELP = {
     "A": {
-        "question": "Do FACS and scRNA-seq give the same cell-type proportions for the same sample?",
+        "question": "Do scRNA-seq and FACS find the same cell-type proportions, when each method "
+                    "measured its own samples?",
         "notes": [
-            "Agreement needs two things: a high correlation (samples ranked the same way) AND "
-            "a bias close to 0 with narrow limits of agreement (similar actual numbers).",
-            "A high correlation with a large bias means the methods follow the same trends "
-            "but one systematically finds more of a population - e.g. because some cells "
-            "survive sorting or capture less well in one method.",
+            "The composition overview (first table, plot A4) simply shows the average proportions "
+            "side by side: each FACS group (e.g. the healthy pool, whose numbers are its own "
+            "proportions), each scRNA-seq group (average over the people) and the reference atlas.",
+            "The test table below it compares every chosen scRNA-seq condition with every chosen FACS "
+            "condition, per population (column 'comparison'). Untick conditions on the setup page to "
+            "drop comparisons you do not need.",
+            "Two groups (at least 3 each): Mann-Whitney U test. A FACS POOL is one sample: the "
+            "scRNA-seq people are then tested against the pool's value with a one-sample Wilcoxon "
+            "test. The smallest possible p is 2/2^n for n people (4 people: 0.125, 6: 0.031, 8: "
+            "0.0078), so with few people look at the size of the difference and its interval.",
+            "seq_minus_facs is the difference between the group medians: 0.05 = 5 percentage "
+            "points more in scRNA-seq. The 95% interval comes from a bootstrap and is only rough "
+            "with few samples.",
+            "Because the samples differ, a difference can be biology (different people or "
+            "conditions) or a method effect (e.g. some cells survive sorting or capture less "
+            "well). Comparing biologically similar groups, e.g. Healthy scRNA-seq vs a Healthy "
+            "pool on FACS, is the fairest test of the methods themselves.",
             "Proportions are compared, not absolute numbers: each population is divided by "
             "the sum of all populations in that sample, separately for each method.",
+            "Neutrophils have little RNA and are fragile, so scRNA-seq often finds fewer of them "
+            "than FACS does - a classic method effect to keep in mind.",
+            "With the CD45 + EpCAM panel, the EpCAM-low gate holds the proximal tubule cells AND any "
+            "other EpCAM-negative CD45- cells (e.g. podocytes, fibroblasts); the Flex labels of those "
+            "cell types are counted in the same population so both methods count the same cells.",
         ],
     },
     "B": {
-        "question": "Does the proportion of each population change between the conditions - "
-                    "and do both methods see the same change?",
+        "question": "Does the proportion of each population change between the conditions "
+                    "within each method - and do both methods see the same change?",
         "notes": [
-            "2 conditions: Mann-Whitney U test. 3 or more: Kruskal-Wallis test for any "
+            "Conditions are only compared within one method (scRNA-seq with scRNA-seq, FACS with "
+            "FACS). 2 conditions: Mann-Whitney U test. 3 or more: Kruskal-Wallis test for any "
             "difference, then Mann-Whitney U for every pair of conditions.",
+            "A condition needs at least 3 samples of that method to be tested, so a single FACS "
+            "pool never appears here (section A compares it with the scRNA-seq samples).",
             "The strongest result is a change that is significant (or at least in the same "
             "direction) in BOTH FACS and scRNA-seq.",
-            "If only one method shows a change, it may be a technical effect of that method.",
         ],
     },
     "C": {
-        "question": "Does the protein measured with antibodies on FACS match the RNA of the "
-                    "same gene measured by scRNA-seq?",
+        "question": "Do the populations that carry a marker protein on FACS also express its gene "
+                    "in scRNA-seq?",
         "notes": [
-            "Marker pairs: CD45 - PTPRC, CD10 - MME, CD13 - ANPEP, EpCAM - EPCAM.",
-            "The table shows the correlation with all populations pooled. This is mostly "
-            "high because the markers differ strongly BETWEEN populations (e.g. CD45 is high "
-            "only on immune cells).",
-            "The correlation INSIDE each population (in C_protein_vs_rna_stats.csv) asks a "
-            "harder question: do samples with more RNA also have more protein? This is often "
-            "weak, because RNA and protein levels are regulated separately.",
+            "Marker pairs: CD45 - PTPRC and EpCAM - EPCAM; with the 4-marker panel also "
+            "CD10 - MME and CD13 - ANPEP.",
+            "The samples differ between the methods, so each population's TYPICAL level is "
+            "compared: the median over the FACS samples (protein) vs the median over the "
+            "scRNA-seq samples (RNA).",
+            "One row per marker: the correlation across the populations. With only 4 or 5 populations "
+            "the p-value can never go below 0.083 (4) or 0.017 (5), so read r as 'same pattern or not' "
+            "(r = 1: the populations come in exactly the same order).",
+            "'All markers (scaled)' puts all markers together after scaling each one from 0 "
+            "(lowest population) to 1 (highest) in each method. With all points together it is the best "
+            "single test of whether the protein and RNA patterns match.",
             "A population with fewer than 10 sequenced cells in a sample gets no RNA value "
             "for that sample (not enough cells for a reliable mean).",
         ],
@@ -82,10 +123,13 @@ SECTION_HELP = {
         "question": "Do the populations look different in the S8 images (size, shape, ...), "
                     "and do these image features change between conditions?",
         "notes": [
+            "Only the FACS samples have images, so this section (and F) uses the FACS samples "
+            "and the FACS conditions only.",
             "The table compares the populations with each other (Kruskal-Wallis + every pair). "
             "The tests between conditions are in D_imaging_tests_between_conditions.csv.",
-            "Big differences between populations are expected (e.g. epithelial cells are "
-            "larger than immune cells) - they mainly confirm that the gates pick the right cells.",
+            "Big differences between populations are expected (e.g. urothelial cells are "
+            "larger than immune cells, neutrophils are more granular) - they mainly confirm that the "
+            "gates pick the right cells.",
             "The feature names are set in SETTINGS (IMAGING_FEATURES) in facs_vs_scrnaseq.py.",
         ],
     },
@@ -93,11 +137,14 @@ SECTION_HELP = {
         "question": "Do our FACS and Flex results look like an independent reference single-cell "
                     "atlas of urine with known cell types?",
         "notes": [
-            "The atlas cell types are translated to the same four populations (atlas_labels in "
+            "The atlas cell types are translated to the same populations as our data (atlas_labels in "
             "SETTINGS) and turned into proportions with the same rule as our samples.",
             "The table compares each population, method and condition with the atlas. With 3 or more "
-            "atlas donors: Mann-Whitney U test of our samples vs the atlas donors. Otherwise: "
-            "Wilcoxon test of our samples vs the single atlas proportion.",
+            "samples and 3 or more atlas donors: Mann-Whitney U test of our samples vs the atlas donors. "
+            "With an atlas without donors: Wilcoxon test of our samples vs the single atlas proportion. "
+            "For a single sample such as a FACS pool: Wilcoxon test of the atlas donors vs the pool's value.",
+            "The atlas is a shared reference for both methods, which helps when FACS and scRNA-seq "
+            "measured different people: if both match the atlas, they also match each other.",
             "A reference atlas is usually made from healthy people. Healthy samples that match the "
             "atlas support the gating and the annotation; a disease condition that differs from it "
             "may be biology.",
@@ -120,8 +167,9 @@ SECTION_HELP = {
             "z-score, extreme values cannot hide themselves by inflating the spread.",
             "An outlier is not automatically an error: check it. Common causes are a staining or "
             "acquisition problem, a gating problem, debris, doublets or clumps, or real biology.",
-            "Sample outliers are found among all samples of a population together. A whole condition "
+            "Sample outliers are found among all FACS samples of a population together. A whole condition "
             "that is shifted (e.g. all Disease samples) is shown in section D, not as outliers here.",
+            "Like section D, this section uses the FACS samples only (the scRNA-seq samples have no images).",
         ],
     },
 }
@@ -131,28 +179,35 @@ SECTION_HELP = {
 # -----------------------------------------------------------------------------
 COLUMN_HELP = {
     "population": "Cell population (from the FACS gates / scRNA-seq labels).",
-    "method": "FACS (BD S8) or scRNA-seq (10x Flex).",
-    "marker": "Antibody marker measured on FACS (paired with its gene).",
+    "method": "scRNA-seq (10x Flex) or FACS (BD S8).",
+    "marker": "Antibody marker measured on FACS (paired with its gene); 'All markers (scaled)' = all "
+              "markers together after scaling each from 0 to 1.",
     "feature": "S8 imaging feature.",
-    "n": "Number of samples used.",
-    "spearman_r": "Rank correlation, -1 to +1. Near +1 = samples come in the same order in both measurements.",
-    "spearman_q_fdr": "FDR-corrected p-value of the Spearman correlation. Below 0.05 = unlikely to be chance.",
+    "n": "Number of values used (in section C: the number of population points).",
+    "spearman_r": "Rank correlation, -1 to +1. Near +1 = the values come in the same order in both measurements.",
+    "spearman_q_fdr": "FDR-corrected p-value of the Spearman correlation (exact for up to 8 points). "
+                      "Below 0.05 = unlikely to be chance.",
     "pearson_r": "Linear correlation, -1 to +1. Near +1 = the values lie on a straight rising line.",
     "pearson_q_fdr": "FDR-corrected p-value of the Pearson correlation.",
-    "bland_altman_bias": "Average difference scRNA-seq minus FACS. Positive = scRNA-seq finds MORE of this "
-                         "population; negative = fewer. 0.05 = 5 percentage points.",
-    "bland_altman_lower": "Lower limit of agreement: 95% of samples have a difference above this.",
-    "bland_altman_upper": "Upper limit of agreement: 95% of samples have a difference below this. "
-                          "A narrow range = the methods agree sample by sample.",
-    "wilcoxon_q_fdr": "Paired test (FDR-corrected): is one method systematically higher than the other "
-                      "in the same samples? Below 0.05 = yes.",
-    "test": "Mann-Whitney U (two groups) or Kruskal-Wallis (three or more groups at once).",
-    "comparison": "Which groups were compared.",
+    "comparison": "Which groups were compared, e.g. 'Disease (scRNA-seq) vs Healthy pool (FACS)'.",
+    "n_seq": "Number of scRNA-seq PEOPLE in this comparison (samples of the same person are combined).",
+    "n_facs": "Number of FACS samples in this comparison (1 = a single sample, e.g. a pool).",
+    "median_seq": "Median proportion of this population in the scRNA-seq samples.",
+    "median_facs": "Median proportion of this population in the FACS samples (for one pool: its value).",
+    "seq_minus_facs": "median_seq minus median_facs. Positive = scRNA-seq finds MORE of this population; "
+                      "0.05 = 5 percentage points.",
+    "seq_minus_facs_ci95_low": "Lower end of the bootstrap 95% interval of the difference.",
+    "seq_minus_facs_ci95_high": "Upper end of the bootstrap 95% interval of the difference. An interval that "
+                                "does not include 0 points to a real difference (rough with few samples).",
+    "seq_to_facs_ratio": "median_seq divided by median_facs. 2 = twice as much in scRNA-seq, 0.5 = half.",
+    "test": "Mann-Whitney U (two groups of samples), Kruskal-Wallis (three or more groups at once) or "
+            "one-sample Wilcoxon (a group of samples against a single value, e.g. a pool). "
+            "Empty = too few samples for a test.",
     "p_value": "Uncorrected p-value.",
     "q_value_fdr": "p-value corrected for all tests in this table. Use this one.",
     "significant": "True if q_value_fdr is below 0.05.",
-    "group": "The condition of our samples that is compared with the atlas.",
-    "n_samples": "Number of our samples used (in section E: in this condition).",
+    "group": "The condition of our samples that is compared with the atlas (for this method).",
+    "n_samples": "Number of our samples used (in section E: of this method and condition).",
     "median_samples": "Median proportion of this population in our samples (this method and condition).",
     "atlas_proportion": "Proportion of this population in the atlas, with all atlas cells pooled.",
     "difference": "median_samples minus atlas_proportion. Positive = our samples have MORE of this "
@@ -178,69 +233,82 @@ PLOT_HELP = {
     "A1_proportions_stacked.png": {
         "title": "Stacked bars: proportions per sample",
         "how": [
-            "Each sample has two bars next to each other: FACS (left) and scRNA-seq ('seq', right).",
+            "One bar per scRNA-seq PERSON (their samples combined) and per FACS sample (see the labels "
+            "above the bars). Each axis label gives the person / sample and its condition. The proportions "
+            "of every single sample are in A_proportions_per_sample.csv.",
             "Each colored block is one population; its height is that population's proportion. "
             "Every bar adds up to 1 (100%).",
-            "Samples are sorted by condition, so you can also see shifts between conditions.",
         ],
-        "meaning": "If the two bars of a sample look alike, the methods agree for that sample. "
-                   "If one color is always bigger in the seq bar, that method systematically finds "
-                   "more of that population.",
+        "meaning": "Compare the scRNA-seq bars with the FACS bars: if one color is clearly bigger in "
+                   "all bars of one method, that method finds more of that population. Within one "
+                   "method, you can see how much the samples differ from each other.",
     },
-    "A2_proportions_FACS_vs_seq.png": {
-        "title": "Scatter: FACS proportion vs scRNA-seq proportion",
+    "A2_proportions_by_method.png": {
+        "title": "Proportions per group: scRNA-seq groups and FACS groups",
         "how": [
-            "One panel per population; each dot is one sample.",
-            "x = proportion measured by FACS, y = proportion measured by scRNA-seq.",
-            "The dashed diagonal is perfect agreement (same value in both methods).",
-            "The title gives the Spearman r and its q-value.",
+            "One panel per population. Each box is one group: the scRNA-seq conditions (light grey) "
+            "and the FACS conditions (dark grey). Each dot is one sample.",
+            "A FACS pool is a single sample, so it is drawn as one dot with a flat line.",
         ],
-        "meaning": "Dots ON the diagonal = the methods agree. Dots ABOVE it = scRNA-seq finds more "
-                   "of this population, BELOW = fewer. Dots on a tight line that is shifted off the "
-                   "diagonal = the methods rank samples the same way but with a constant offset.",
+        "meaning": "If the scRNA-seq and FACS boxes of biologically similar groups sit at the same "
+                   "height, the methods agree for that population. A gap between them is a "
+                   "difference between the methods (or between the people measured).",
     },
-    "A3_bland_altman.png": {
-        "title": "Bland-Altman: how big are the differences between the methods?",
+    "A4_composition_overview.png": {
+        "title": "Composition overview: FACS, scRNA-seq and the reference atlas",
         "how": [
-            "One panel per population; each dot is one sample.",
-            "x = the average of the two methods, y = scRNA-seq minus FACS.",
-            "Grey line = 0 (no difference). Black line = the bias (average difference). "
-            "Dashed lines = limits of agreement: 95% of samples should fall between them.",
+            "One stacked bar per group: the FACS groups (e.g. the healthy pool), the scRNA-seq groups and "
+            "the reference atlas. Each block is a population, with its percentage written in it.",
+            "A pool is a single sample, so its bar is its own composition. For scRNA-seq and the atlas the bar "
+            "is the average over the people / donors (n is written under each bar).",
         ],
-        "meaning": "Black line far from 0 = one method is systematically higher. Dashed lines far "
-                   "apart = the methods can disagree a lot for a single sample. Dots that slope or "
-                   "spread out from left to right = the difference depends on how common the "
-                   "population is.",
+        "meaning": "The quickest way to see whether the pool, the Flex data and the atlas contain the cell "
+                   "types in similar amounts. A block that is clearly bigger or smaller in one bar points to a "
+                   "biological difference or a method effect (e.g. neutrophils are often lower in scRNA-seq). "
+                   "The spread between people is shown in A2, B1 and E1.",
+    },
+    "A3_method_difference.png": {
+        "title": "How much do scRNA-seq and FACS differ?",
+        "how": [
+            "One panel per comparison (a scRNA-seq group vs a FACS group); one row per population.",
+            "Dot = median scRNA-seq minus median FACS. Line = bootstrap 95% interval. "
+            "The dashed line at 0 = no difference. The q-value is written on the right.",
+        ],
+        "meaning": "Dots to the right of 0: scRNA-seq finds more of that population; to the left: fewer. "
+                   "A line that does not cross 0 points to a real difference. The same population "
+                   "shifted the same way in every comparison suggests a method effect rather than biology.",
     },
     "B1_proportions_by_condition.png": {
-        "title": "Proportions per condition, FACS and scRNA-seq",
+        "title": "Proportions per condition, scRNA-seq and FACS",
         "how": [
-            "One panel per population; the conditions are on the x-axis.",
-            "For each condition: dark grey box = FACS, light grey box = scRNA-seq. Each dot is one sample.",
+            "One panel per population; the conditions of both methods are on the x-axis.",
+            "For each condition: light grey box = scRNA-seq, dark grey box = FACS. Each dot is one "
+            "sample. A method without samples in a condition has no box there.",
             "Compare the boxes of the same color between conditions.",
         ],
         "meaning": "If the median (black line) moves in the same direction in both methods, the change "
                    "between conditions is robust. Check the table above to see whether it is "
-                   "significant. Only drawn when at least two conditions are chosen.",
+                   "significant. Only drawn when a method has at least two chosen conditions.",
     },
     "C1_protein_vs_rna.png": {
         "title": "Protein (FACS) vs RNA (scRNA-seq) per marker",
         "how": [
-            "One panel per marker; each dot is one sample x one population, colored by population.",
-            "x = mean RNA of the gene in that population (log-normalized), y = FACS median "
-            "intensity of the antibody in that population's gate.",
-            "The title gives the Spearman r with all populations pooled.",
+            "One panel per marker; each dot is one population.",
+            "x = typical RNA of the gene in that population (median over the scRNA-seq samples), "
+            "y = typical FACS median intensity of the antibody (median over the FACS samples). "
+            "The thin lines show the 25th-75th percentile over the samples of each method.",
+            "The title gives the Spearman r across the populations.",
         ],
-        "meaning": "The population that should carry the marker (e.g. immune cells for CD45, "
-                   "proximal tubule for CD10/CD13, epithelial for EpCAM) should sit top-right: high "
-                   "in both methods. Separate color clouds = the marker separates the populations in "
-                   "both methods. A rising trend inside one color = protein follows RNA between samples.",
+        "meaning": "The population that should carry the marker (e.g. neutrophils and other immune cells "
+                   "for CD45, proximal tubule for CD10/CD13, EpCAM-high epithelium for EpCAM) should sit top-right: high "
+                   "in both methods. Dots rising from bottom-left to top-right = protein and RNA put "
+                   "the populations in the same order.",
     },
     "D1_imaging_features.png": {
         "title": "S8 imaging features per population and condition",
         "how": [
             "Rows = imaging features, columns = populations, x-axis = conditions.",
-            "Each box shows the values of one condition; each dot is one sample "
+            "Each box shows the FACS samples of one condition; each dot is one sample "
             "(the median of that feature inside the population's gate).",
             "Every panel has its own y-axis scale - read the numbers before comparing heights "
             "between panels.",
@@ -253,7 +321,7 @@ PLOT_HELP = {
         "title": "Proportions compared with the reference atlas",
         "how": [
             "One panel per population; our conditions on the x-axis, as in plot B1 "
-            "(dark grey = FACS, light grey = scRNA-seq, each dot = one sample).",
+            "(light grey = scRNA-seq, dark grey = FACS, each dot = one sample).",
             "The pink box on the right ('Atlas') shows the atlas donors, each pink dot = one donor "
             "(only drawn when the atlas has more than one donor).",
             "The pink dashed line is the atlas proportion with all atlas cells pooled.",
@@ -282,14 +350,14 @@ PLOT_HELP = {
         "title": "Marker patterns: atlas RNA, Flex RNA and FACS protein",
         "how": [
             "Three heatmaps: the reference atlas (RNA), our Flex scRNA-seq (RNA) and our FACS (protein).",
-            "Rows = populations, columns = markers (CD45 = PTPRC, CD10 = MME, CD13 = ANPEP, "
+            "Rows = populations, columns = the markers of the panel (CD45 = PTPRC, CD10 = MME, CD13 = ANPEP, "
             "EpCAM = EPCAM). Darker = higher.",
             "Each column is scaled from 0 (the population with the lowest level) to 1 (the highest), "
             "separately in each heatmap, because RNA and antibody brightness have different units.",
             "The titles give the Spearman correlation between that heatmap and the atlas heatmap. "
             "Only drawn when the atlas has one row per cell with the four gene columns.",
         ],
-        "meaning": "If the three heatmaps show the same pattern (e.g. CD45 dark only in immune, CD10/CD13 "
+        "meaning": "If the three heatmaps show the same pattern (e.g. CD45 dark only in the immune populations, CD10/CD13 "
                    "dark only in proximal tubule), our populations carry the same markers as the atlas "
                    "cell types, which supports the gating and the annotation. A correlation close to 1 "
                    "means the patterns match. A marker that is dark in a different population than in "
@@ -298,7 +366,7 @@ PLOT_HELP = {
     "F1_imaging_feature_means.png": {
         "title": "Mean imaging features per cell type",
         "how": [
-            "One panel per imaging feature; one bar per population (all chosen samples together).",
+            "One panel per imaging feature; one bar per population (all chosen FACS samples together).",
             "Bar height = mean of the sample medians. Error bar = 95% confidence interval of that mean.",
             "Each dot is one sample. A red ring and a name mark an outlier sample (robust z > 3.5).",
         ],
@@ -359,7 +427,8 @@ PLOT_HELP = {
     "F6_imaging_cell_distributions.png": {
         "title": "Distribution of single cells per cell type",
         "how": [
-            "One panel per feature. Each violin shows ALL single cells of a population (all chosen samples).",
+            "One panel per feature. Each violin shows the single cells of a population (all chosen FACS samples; "
+            "with very many cells the shape is drawn from 5000 random cells, the median from all).",
             "The width shows how many cells have that value; the black line is the median.",
             "Long thin tails are rare cells with extreme values.",
         ],
