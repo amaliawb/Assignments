@@ -4,7 +4,7 @@
 <section class="card">
   <h1>3. Results</h1>
   <p>FACS panel <b>{{ info.panel_description }}</b> · Column <b>{{ info.condition_column }}</b> ·
-     scRNA-seq: <b>{{ info.conditions["scRNA-seq"] | join(", ") }}</b> ({{ info.n_cells }} cells from {{ info.n_seq_samples }} samples of {{ info.n_seq_people }} people) ·
+     scRNA-seq: <b>{{ info.conditions["scRNA-seq"] | join(", ") }}</b> ({{ info.n_cells }} cells from {{ info.n_seq_samples }} samples of {{ info.n_seq_people }} people{% if info.seq_source %}; {{ info.seq_source }}{% endif %}) ·
      FACS: <b>{{ info.conditions["FACS"] | join(", ") }}</b> ({{ info.n_facs_samples }} samples)<br>
      {{ n_method_significant }} significant scRNA-seq vs FACS differences ·
      {{ n_significant }} significant condition differences in proportions (FDR &lt; {{ alpha }})</p>

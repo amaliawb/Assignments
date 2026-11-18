@@ -76,6 +76,13 @@ input[type="file"]::file-selector-button {
 }
 input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 4px 18px 4px 0; font-weight: 400; }
+/* setup page: one box per possible condition column, with its description and values */
+label.choice { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; padding: 10px 12px;
+               font-weight: 400; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+label.choice input { margin-top: 4px; }
+label.choice .values { font-size: 0.92em; }
+label.choice.unusable { opacity: 0.6; }
+fieldset h4 { margin: 14px 0 4px; }
 fieldset { border: 0; padding: 0; margin: 0; }
 
 button, .button {

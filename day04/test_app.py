@@ -180,6 +180,28 @@ def test_upload_own_files(client, demo_data):
     assert "The cell-level plots (F6–F8) need the optional per-cell imaging export" in page
 
 
+def test_setup_page_explains_the_condition_column(client, demo_data, tmp_path):
+    # Add a column that only the scRNA-seq samples have: it is shown, but can't be chosen
+    metadata = pd.read_csv(demo_data / "metadata.csv", dtype=str)
+    metadata["sex"] = metadata["method"].map({"scRNA-seq": "F", "FACS": None})
+    sheet = tmp_path / "with_sex.csv"
+    metadata.to_csv(sheet, index=False)
+    files = {"metadata": (open(sheet, "rb"), "samples.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx"),
+             "seq": (open(demo_data / "scrnaseq_cells.csv", "rb"), "cells.csv")}
+    run_id = client.post("/upload", data=files, content_type="multipart/form-data").headers["Location"].split("/")[-1]
+    page = client.get(f"/run/{run_id}").get_data(as_text=True)
+
+    assert "Which column holds the groups?" in page and "Which groups to include?" in page
+    assert "Which group each sample belongs to" in page                     # help text of "condition"
+    assert "scRNA-seq: Healthy, Disease" in page and "FACS: Healthy pool, Disease" in page
+    assert 'value="flex_probe_barcode"' not in page                         # a barcode is not a group
+    assert "Can't be used: the FACS samples have no value here" in page
+    response = client.post(f"/run/{run_id}/analyse", data={"condition_column": "sex"})
+    assert response.status_code == 400
+    assert "no values for the FACS samples" in response.get_data(as_text=True)
+
+
 def test_upload_per_cell_imaging_export(client, demo_data):
     files = {
         "metadata": (open(demo_data / "metadata.csv", "rb"), "my_samples.csv"),
@@ -227,6 +249,47 @@ def test_upload_own_files_with_atlas(client, demo_data):
     for name in ATLAS_FILES:
         assert name in page
     assert "No reference atlas was given" not in page
+
+
+def test_upload_without_scrnaseq_file_uses_the_default_flex_data(client, demo_data, tmp_path, monkeypatch):
+    # A small fake "default Flex" .h5ad made from the demo cells (the real one is on the X: drive)
+    from test_business_logic import write_fake_h5ad
+    cells = pd.read_csv(demo_data / analysis.SEQ_FILE, dtype={analysis.SAMPLE_COLUMN: str})
+    metadata = pd.read_csv(demo_data / analysis.METADATA_FILE, dtype=str)
+    seq_rows = metadata[metadata["method"] == "scRNA-seq"].set_index(analysis.SAMPLE_COLUMN)
+    cells = cells.assign(leiden_atlas=cells[analysis.CELL_TYPE_COLUMN],
+                         patient_id=cells[analysis.SAMPLE_COLUMN].map(seq_rows["donor_id"]),
+                         role=cells[analysis.SAMPLE_COLUMN].map(seq_rows["condition"]), timepoint="T00")
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_H5AD", write_fake_h5ad(tmp_path / "flex.h5ad", cells))
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_CACHE_DIR", tmp_path / "cache")
+
+    # Upload only the FACS part of the sample sheet and the FlowJo export, no scRNA-seq file
+    facs_only = tmp_path / "facs_samples.csv"
+    metadata[metadata["method"] == "FACS"].to_csv(facs_only, index=False)
+    files = {"metadata": (open(facs_only, "rb"), "facs_samples.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx")}
+    response = client.post("/upload", data=files, content_type="multipart/form-data")
+    assert response.status_code == 302
+    run_id = response.headers["Location"].rstrip("/").split("/")[-1]
+    setup_page = client.get(f"/run/{run_id}").get_data(as_text=True)
+    assert "default Flex data (flex.h5ad)" in setup_page
+    assert "12 scRNA-seq samples" in setup_page and "(6 samples from 4 people)" in setup_page
+
+    client.post(f"/run/{run_id}/analyse", data={"condition_column": "condition"})
+    page = client.get(f"/run/{run_id}/results").get_data(as_text=True)
+    assert "12 samples of 8 people; default Flex data" in page
+    assert "A4_composition_overview.png" in page
+
+
+def test_missing_default_flex_data_is_reported(client, demo_data, tmp_path, monkeypatch):
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_H5AD", tmp_path / "not_connected.h5ad")
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_CACHE_DIR", tmp_path / "no_cache")
+    files = {"metadata": (open(demo_data / "metadata.csv", "rb"), "metadata.csv"),
+             "facs": (open(demo_data / "facs_flowjo_export.xlsx", "rb"), "flowjo.xlsx")}
+    page = client.post("/upload", data=files, content_type="multipart/form-data",
+                       follow_redirects=True).get_data(as_text=True)
+    assert "default Flex data was not found" in page
+    assert not any(web.RUNS_DIR.iterdir())      # the half-finished run was removed
 
 
 def test_atlas_summary_table_gives_same_proportions(demo_data, tmp_path):

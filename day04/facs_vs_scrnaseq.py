@@ -107,7 +107,8 @@ INPUT FILES
                     into one per person before the statistics: samples of the
                     same person are not independent. Empty = its own person.
    Plus any number of columns describing the samples (condition, sex,
-   flex_probe_barcode, ...). You choose the condition column when you run.
+   flex_probe_barcode, ...). You choose the condition column (the groups to
+   compare) when you run; barcode / file / ID columns are never offered.
    Example:
       sample_id,method,facs_name,donor_id,condition
       S01,scRNA-seq,,P1,Disease
@@ -224,6 +225,25 @@ DONOR_COLUMN = "donor_id"        # optional: the PERSON each sample comes from. 
                                  # before the statistics, because they are not independent.
                                  # Empty / missing = every sample is its own person.
 FACS_NAME_COLUMN = "facs_name"   # the sample name as FlowJo writes it (FACS samples)
+
+# The CONDITION column is the sample-sheet column that says which group each sample
+# belongs to (e.g. Healthy pool / Disease); you choose it when you run. Columns
+# whose name contains one of these words describe a sample but are not groups
+# (one barcode or file per sample), so they are never offered as the condition column.
+NOT_CONDITION_WORDS = ["barcode", "file", "path", "_id"]
+# Short explanations shown on the website next to each possible condition column,
+# and next to its values. Add your own columns and values here.
+CONDITION_COLUMN_HELP = {
+    "condition": "Which group each sample belongs to. Default Flex data: the 'role' column of "
+                 "the Flex notebook (healthy_control, donor, recipient). FACS: what you wrote in "
+                 "your sample sheet (e.g. Healthy pool, Disease).",
+    "timepoint": "When the sample was taken. Default Flex data: the 'timepoint' column of the "
+                 "Flex notebook (control = healthy control; T00, T07, T30 = day 0, 7 and 30).",
+}
+CONDITION_VALUE_HELP = {
+    "healthy_control": "healthy control", "control": "healthy control",
+    "T00": "day 0", "T07": "day 7", "T30": "day 30",
+}
 CELL_TYPE_COLUMN = "cell_type"   # the annotation label of each sequenced cell
 
 # The two methods, and the ways they may be written in the method column
@@ -242,6 +262,24 @@ ATLAS_FILE = "reference_atlas.csv"
 ATLAS_CELL_TYPE_COLUMN = "cell_type"   # column with the atlas' cell-type names
 ATLAS_DONOR_COLUMN = "donor_id"        # optional: which atlas donor/sample each row comes from
 ATLAS_COUNT_COLUMN = "n_cells"         # optional: number of cells in the row (summary-table format)
+
+# ---- Default Flex data (used when no scRNA-seq file is given) ------------------
+# The web app uses this Flex dataset when you leave the scRNA-seq upload empty.
+# The cells (sample, label, marker genes) are read from the .h5ad file once and
+# saved in DEFAULT_FLEX_CACHE_DIR; the cache is rebuilt when the .h5ad changes.
+# The Flex samples are added to your sample sheet automatically (unless the sheet
+# already lists scRNA-seq samples), with:
+#   donor_id  = DEFAULT_FLEX_DONOR_COLUMN (12 samples from 8 people)
+#   condition = DEFAULT_FLEX_CONDITION_COLUMNS: "condition" (healthy_control /
+#               donor / recipient) and "timepoint" (control, T00, T07, T30).
+# Name the condition column of your FACS samples "condition" too, so both
+# methods can be chosen from the same column.
+DEFAULT_FLEX_H5AD = Path(r"X:\Rotation_students\Amalia\1. data\results_v5_flex\data\v5\flex_v5_processed.h5ad")
+DEFAULT_FLEX_LAYER = "log1p_cp10k"            # expression layer used for the marker genes
+DEFAULT_FLEX_LABEL_COLUMN = "leiden_atlas"    # cluster + atlas label, e.g. "6: myeloid"
+DEFAULT_FLEX_DONOR_COLUMN = "patient_id"      # the person each sample comes from
+DEFAULT_FLEX_CONDITION_COLUMNS = {"condition": "role", "timepoint": "timepoint"}   # sheet column <- obs column
+DEFAULT_FLEX_CACHE_DIR = SCRIPT_DIR / "default_flex"   # not committed to git (patient data)
 
 # ---- FlowJo column-name templates --------------------------------------------
 # FlowJo names a statistic column "<gate path> | <statistic>".
@@ -292,24 +330,41 @@ FACS_TOTAL_GATE = LIVE_GATE
 # EpCAM high = distal tubule, collecting duct and urothelium.
 # EpCAM low  = proximal tubule (the same cells as CD10+ CD13+), plus other
 #              EpCAM-negative CD45- cells.
+#
+# The labels of the DEFAULT FLEX DATA (results_v5_flex, column "leiden_atlas")
+# are listed below too, next to the demo labels. They were assigned by the
+# marker genes of each cluster (mean log1p CP10k):
+#   6, 7, 8, 10, 11 "myeloid": CSF3R, FCGR3B, CXCR2 high  -> neutrophils
+#   5, 9 "myeloid"           : CD68, C1QA, CD163, LYZ high -> macrophages (other immune)
+#   4 T_NK, 12 B_plasma      : CD3E / MS4A1                -> other immune
+#   3 ascending_thick_LOH    : some EPCAM                  -> EpCAM-high epithelium
+#   0, 1, 2 epithelium_prostate_urethra: KRT13 + S100A8, NO EPCAM, no MME/ANPEP
+#        -> squamous-like cells: CD45- EpCAM-low (and not CD10+ CD13+)
+# Cluster numbers change when the notebook is re-clustered: check them then.
+FLEX_SQUAMOUS_LABELS = ["0: epithelium_prostate_urethra ?", "1: epithelium_prostate_urethra ?",
+                        "2: epithelium_prostate_urethra ?"]
 IMMUNE_POPULATIONS = {
     "Neutrophils": {
         "gate": f"{CD45_POS_GATE}/SSC high",
-        "seq_labels": ["Neutrophil"],
+        "seq_labels": ["Neutrophil",
+                       "6: myeloid", "7: myeloid", "8: myeloid", "10: myeloid", "11: myeloid ?"],
         "atlas_labels": ["Neutrophil"],
     },
     "Other immune": {
         "gate": f"{CD45_POS_GATE}/SSC low",
-        "seq_labels": ["T cell", "NK cell", "B cell", "Monocyte", "Macrophage"],
+        "seq_labels": ["T cell", "NK cell", "B cell", "Monocyte", "Macrophage",
+                       "4: T_NK", "12: B_plasma", "5: myeloid", "9: myeloid"],
         "atlas_labels": ["T/NK cell", "B cell", "Myeloid cell"],
     },
 }
 EPCAM_HIGH_LABELS = {
-    "seq_labels": ["Distal tubule cell", "Collecting duct cell", "Urothelial cell"],
+    "seq_labels": ["Distal tubule cell", "Collecting duct cell", "Urothelial cell",
+                   "3: ascending_thick_LOH_kidney ?"],
     "atlas_labels": ["Distal tubule", "Collecting duct", "Urothelial"],
 }
-# Squamous epithelial cells (from the urethra / vagina) are not listed: add their
-# label to whichever gate they fall into in your own data.
+# Squamous epithelial cells (from the urethra / vagina) are EpCAM-negative, so on
+# FACS they fall into the CD45- EpCAM-low gate: the Flex squamous-like clusters
+# are listed there (FLEX_SQUAMOUS_LABELS). Add your own squamous label the same way.
 
 PANELS = {
     # CD45 + EpCAM:
@@ -322,7 +377,7 @@ PANELS = {
             **IMMUNE_POPULATIONS,
             "EpCAM-low (proximal tubule)": {
                 "gate": f"{CD45_NEG_GATE}/EpCAM low",
-                "seq_labels": ["Proximal tubule cell", "Podocyte", "Fibroblast"],
+                "seq_labels": ["Proximal tubule cell", "Podocyte", "Fibroblast", *FLEX_SQUAMOUS_LABELS],
                 "atlas_labels": ["Proximal tubule", "Podocyte", "Fibroblast"],
             },
             "EpCAM-high epithelium": {
@@ -355,7 +410,7 @@ PANELS = {
             },
             "Other CD45-": {
                 "gate": f"{NOT_PT_GATE}/EpCAM low",
-                "seq_labels": ["Podocyte", "Fibroblast"],
+                "seq_labels": ["Podocyte", "Fibroblast", *FLEX_SQUAMOUS_LABELS],
                 "atlas_labels": ["Podocyte", "Fibroblast"],
             },
         },
@@ -541,8 +596,16 @@ def ask_for_numbers(prompt, n_options, allow_many):
 
 
 def condition_candidates(metadata):
-    """Every metadata column that could hold the conditions (all except the ID and method columns)."""
-    return [c for c in metadata.columns if c not in (SAMPLE_COLUMN, FACS_NAME_COLUMN, "method", DONOR_COLUMN)]
+    """
+    The metadata columns that could hold the conditions: all except the ID, method
+    and person columns, columns named like a barcode / file / ID (NOT_CONDITION_WORDS),
+    and columns without any value.
+    """
+    fixed = (SAMPLE_COLUMN, FACS_NAME_COLUMN, "method", DONOR_COLUMN)
+    return [c for c in metadata.columns
+            if c not in fixed
+            and not any(word in c.lower() for word in NOT_CONDITION_WORDS)
+            and metadata[c].notna().any()]
 
 
 def choose_conditions(metadata, column=None, seq_values=None, facs_values=None):
@@ -671,6 +734,132 @@ def load_seq(path, metadata):
         print(f"WARNING: these samples are in the metadata but not in the scRNA-seq file: {missing}")
     # Keep only cells from the samples (and conditions) chosen for this analysis
     return cells[cells[SAMPLE_COLUMN].isin(metadata[SAMPLE_COLUMN])].copy()
+
+
+# ---- The default Flex data (used when no scRNA-seq file is given) ----------------
+DEFAULT_FLEX_CELLS = "flex_cells.csv"      # the two cache files in DEFAULT_FLEX_CACHE_DIR
+DEFAULT_FLEX_SHEET = "flex_samples.csv"
+
+
+def read_h5ad_cells(path, genes, layer, obs_columns):
+    """
+    Read from an .h5ad file only what the comparison needs: some per-cell (obs)
+    columns and the expression of a few genes in one layer. The file (several GB)
+    is never loaded whole: the sparse matrix is read in chunks of cells and only
+    the wanted genes are kept. Returns one row per cell.
+    """
+    import h5py                     # imported here: only needed for .h5ad files
+    try:
+        from anndata.io import read_elem
+    except ImportError:             # older anndata versions
+        from anndata.experimental import read_elem
+
+    with h5py.File(path, "r") as f:
+        obs = read_elem(f["obs"])
+        for column in obs_columns:
+            get_column(obs, column, path.name)
+        gene_names = pd.Index(read_elem(f["var"]).index)
+        missing = [g for g in genes if g not in gene_names]
+        if missing:
+            raise SystemExit(f"These genes are not in {path.name}: {missing}")
+        key = f"layers/{layer}" if layer else "X"
+        if key not in f:
+            raise SystemExit(f"{path.name} has no layer '{layer}'. Change DEFAULT_FLEX_LAYER in SETTINGS.")
+        matrix = f[key]
+        gene_index = gene_names.get_indexer(genes)
+        expression = np.zeros((len(obs), len(genes)), dtype=np.float32)
+
+        if isinstance(matrix, h5py.Dataset):
+            # A dense matrix: read the gene columns directly (h5py wants them in increasing order)
+            order = np.argsort(gene_index)
+            expression[:, order] = matrix[:, gene_index[order]]
+        elif matrix.attrs.get("encoding-type") == "csr_matrix":
+            # Sparse, one row per cell: row i holds the values data[indptr[i]:indptr[i+1]]
+            # of the genes indices[indptr[i]:indptr[i+1]]
+            position = np.full(len(gene_names), -1)          # gene number -> column in `expression`
+            position[gene_index] = np.arange(len(genes))
+            indptr = matrix["indptr"][:]
+            for start in range(0, len(obs), 5000):            # 5000 cells at a time
+                end = min(len(obs), start + 5000)
+                first, last = indptr[start], indptr[end]
+                columns = matrix["indices"][first:last]
+                values = matrix["data"][first:last]
+                rows = np.repeat(np.arange(start, end), np.diff(indptr[start:end + 1]))
+                keep = position[columns] >= 0
+                expression[rows[keep], position[columns[keep]]] = values[keep]
+        else:
+            raise SystemExit(f"The matrix '{key}' in {path.name} is not stored as dense or CSR; "
+                             "save the .h5ad again from scanpy.")
+
+    cells = obs[list(dict.fromkeys(obs_columns))].astype(str).reset_index(drop=True)
+    return pd.concat([cells, pd.DataFrame(expression, columns=genes)], axis=1)
+
+
+def default_flex_tables():
+    """
+    The default Flex data as two tables: the cells (sample_id, cell_type and the
+    marker genes) and the sample-sheet rows of its samples. The first time, they
+    are read from DEFAULT_FLEX_H5AD; then from the cache in DEFAULT_FLEX_CACHE_DIR
+    (rebuilt when the .h5ad is newer, and used alone when the drive is not connected).
+    """
+    source = Path(DEFAULT_FLEX_H5AD)
+    cells_path = DEFAULT_FLEX_CACHE_DIR / DEFAULT_FLEX_CELLS
+    sheet_path = DEFAULT_FLEX_CACHE_DIR / DEFAULT_FLEX_SHEET
+    genes = [m["gene"] for m in ALL_MARKERS.values()]
+
+    if cells_path.exists() and sheet_path.exists():
+        up_to_date = not source.exists() or cells_path.stat().st_mtime >= source.stat().st_mtime
+        cells = pd.read_csv(cells_path, dtype={SAMPLE_COLUMN: str, CELL_TYPE_COLUMN: str})
+        if up_to_date and set(genes) <= set(cells.columns):
+            return cells, pd.read_csv(sheet_path, dtype=str)
+    if not source.exists():
+        raise SystemExit(f"No scRNA-seq file was given, and the default Flex data was not found:\n  {source}\n"
+                         "Is the drive connected? Otherwise upload a scRNA-seq file.")
+
+    print(f"Reading the default Flex data from {source.name} (only the first time; takes a minute)...")
+    conditions = DEFAULT_FLEX_CONDITION_COLUMNS
+    table = read_h5ad_cells(source, genes, DEFAULT_FLEX_LAYER,
+                            [SAMPLE_COLUMN, DEFAULT_FLEX_LABEL_COLUMN, DEFAULT_FLEX_DONOR_COLUMN,
+                             *conditions.values()])
+    cells = table[[SAMPLE_COLUMN, DEFAULT_FLEX_LABEL_COLUMN, *genes]].rename(
+        columns={DEFAULT_FLEX_LABEL_COLUMN: CELL_TYPE_COLUMN})
+    # One sample-sheet row per sample: its person and its conditions
+    sheet = pd.DataFrame({SAMPLE_COLUMN: table[SAMPLE_COLUMN], METHOD_COLUMN: "scRNA-seq",
+                          DONOR_COLUMN: table[DEFAULT_FLEX_DONOR_COLUMN],
+                          **{name: table[column] for name, column in conditions.items()}})
+    sheet = sheet.drop_duplicates(SAMPLE_COLUMN).sort_values(SAMPLE_COLUMN).reset_index(drop=True)
+
+    DEFAULT_FLEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cells.to_csv(cells_path, index=False)
+    sheet.to_csv(sheet_path, index=False)
+    return pd.read_csv(cells_path, dtype={SAMPLE_COLUMN: str, CELL_TYPE_COLUMN: str}), sheet.astype(str)
+
+
+def add_default_flex(data_dir):
+    """
+    When data_dir has no scRNA-seq file: put the default Flex cells there, and add
+    the Flex samples to the sample sheet (only if the sheet lists no scRNA-seq
+    samples of its own). Returns True when the default data was used.
+    """
+    data_dir = Path(data_dir)
+    if (data_dir / SEQ_FILE).exists():
+        return False
+    cells, sheet = default_flex_tables()
+    cells.to_csv(data_dir / SEQ_FILE, index=False)
+
+    metadata_path = data_dir / METADATA_FILE
+    metadata = pd.read_csv(metadata_path, dtype=str)
+    if METHOD_COLUMN not in metadata.columns:
+        # An old sheet without a method column: its samples are taken as the FACS samples
+        metadata[METHOD_COLUMN] = "FACS"
+    if metadata[METHOD_COLUMN].map(normalize_method).eq("scRNA-seq").any():
+        print(f"Using the default Flex cells for the scRNA-seq samples listed in {METADATA_FILE}.")
+    else:
+        metadata = pd.concat([metadata, sheet], ignore_index=True)
+        print(f"Using the default Flex data: added its {len(sheet)} samples "
+              f"({sheet[DONOR_COLUMN].nunique()} people) to {METADATA_FILE}.")
+    metadata.to_csv(metadata_path, index=False)
+    return True
 
 
 # =============================================================================

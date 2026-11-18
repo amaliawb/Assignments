@@ -158,6 +158,13 @@ cells["population"] = cells[CELL_TYPE_COLUMN].map(label_to_population).fillna("O
 
 In words: "look up each cell's label in the dictionary and write the population in a new column; if a label isn't in the dictionary, call it 'Other'". The program prints which labels ended up as "Other", so you notice if you forgot one in SETTINGS.
 
+**The default Flex data.** When no scRNA-seq file is given on the website, three functions make one from the real Flex data (`DEFAULT_FLEX_H5AD` in SETTINGS):
+- **`read_h5ad_cells(...)`** opens the `.h5ad` file (4 GB) with `h5py` and reads only what is needed: a few per-cell columns (sample, cluster label, person, conditions) and the four marker genes. The expression is stored as a *sparse* matrix: for each cell, only the genes that are not zero, as a list of gene numbers (`indices`) and values (`data`), with `indptr` saying where each cell's part starts. The function goes through 5000 cells at a time and keeps only the values of the four genes.
+- **`default_flex_tables()`** turns that into the cells table (`sample_id`, `cell_type`, PTPRC, MME, ANPEP, EPCAM) and one sample-sheet row per sample (`donor_id` = the patient, `condition` = healthy_control / donor / recipient, `timepoint`). Both are saved in `day04/default_flex/`, so the slow reading happens only once. The cache is rebuilt when the `.h5ad` is newer, and used alone when the drive is not connected.
+- **`add_default_flex(data_dir)`** puts those cells in the run's data folder and adds the Flex samples to the sample sheet, unless the sheet already lists scRNA-seq samples. It does nothing if a scRNA-seq file was uploaded.
+
+The Flex labels (`leiden_atlas`, e.g. `6: myeloid`) are listed in `PANELS` under the gate each cluster would fall into on FACS, chosen from the cluster's marker genes (see the comment above `IMMUNE_POPULATIONS`).
+
 ### Step 2: Building the comparison tables
 
 The raw files have very different shapes: FlowJo has one row per **sample**, scRNA-seq has one row per **cell**. Step 2 turns both into the same "long" shape, with one measurement per row. That makes comparing and plotting simple. Every row belongs to one method and one of *its* samples. FACS and scRNA-seq rows are later matched by **population and condition**, never by sample.
@@ -349,7 +356,8 @@ The website is built with **Flask**. Each page is a Python function. A line like
  Browser                          app.py                            facs_vs_scrnaseq.py
  ───────                          ──────                            ───────────────────
  open  /                 ──►  index()     shows upload page
- upload files / demo     ──►  upload()    saves files in runs/<id>/data ──► load_metadata (check)
+ upload files / demo     ──►  upload()    saves files in runs/<id>/data ──► add_default_flex (if no scRNA-seq file)
+                                                                            load_metadata (check)
  open  /run/<id>         ──►  setup()     shows condition checkboxes (scRNA-seq and FACS)
  click "Run analysis"    ──►  analyse()   ─────────────────────────────────► run_analysis(...)
  open  /run/<id>/results ──►  results()   reads the saved tables + plots,
@@ -359,9 +367,11 @@ The website is built with **Flask**. Each page is a Python function. A line like
 
 ### Important ideas in `app.py`
 
+- **The default Flex data.** The scRNA-seq field may be left empty. `upload()` then calls `add_default_flex(...)`, which copies the real Flex cells into the run folder and adds the Flex samples to the sample sheet. A small file `seq_source.txt` in the run folder remembers where the scRNA-seq data came from; the setup and results pages show it. If the Flex file can't be found (e.g. the X: drive is not connected and there is no cache), the upload page shows that message.
 - **Optional uploads.** The atlas and the single-cell imaging fields may be left empty. `upload()` then skips them, and `run_analysis()` simply doesn't find those files. The results page then shows a short note: "no reference atlas was given" in section E, or that the cell-level plots F6–F8 need the per-cell export in section F.
 - **The FACS panel.** The setup page asks which antibodies were used (radio buttons). The choice is passed to `run_analysis(...)` and saved in `run.json`, so it stays selected when you re-run.
-- **Conditions per method.** The setup page has two sets of checkboxes for the chosen column: one for the scRNA-seq samples and one for the FACS samples. Ticking none in a set means all conditions of that method.
+- **The condition column.** The "condition column" is the sample-sheet column that says which group each sample belongs to (e.g. `condition`: healthy_control / recipient for Flex, Healthy pool / Disease for FACS). `condition_candidates(...)` offers every column except the ID, method and person columns, columns named like a barcode, file or ID (`NOT_CONDITION_WORDS` in SETTINGS, so `flex_probe_barcode` is left out), and empty columns. For each column the setup page shows a short explanation (`CONDITION_COLUMN_HELP`) and its values for each method. A column that has values for only one method is shown greyed out, because there would be nothing to compare.
+- **Conditions per method.** The setup page has two sets of checkboxes for the chosen column: one for the scRNA-seq groups and one for the FACS groups. Known values get a short explanation (`CONDITION_VALUE_HELP`, e.g. T07 = day 7). Ticking none in a set means all groups of that method.
 - **A separate folder for every analysis.** Each upload gets a random ID (like `f7adccc8f906...`) and its own folder `runs/<id>/`, with `data/`, `results/` and `run.json` (the conditions you chose for each method). Two analyses can never mix up their files.
 - **Errors become messages, not crashes.** When the analysis finds a problem, such as a missing column, it stops with an explanation. The helper `call_analysis(...)` catches that and shows the explanation on the page in red, so you can fix SETTINGS and try again.
 - **One analysis at a time.** A "lock" makes sure two analyses don't run at the same moment, because the plotting library isn't built for that.
@@ -395,6 +405,8 @@ The tests are small programs that use the code and check the answers, like contr
 - the terminal command still works;
 - the website goes from upload → conditions → results → zip download;
 - the FACS panel chosen on the website is used for the analysis, shown on the results page, and stays selected when you re-run;
+- the setup page explains the condition column, leaves out barcode columns, and refuses a column that only one method has values in;
+- an upload without a scRNA-seq file uses the default Flex data (here a tiny made-up `.h5ad`), and a missing Flex file gives a clear message;
 - every section and plot on the results page has its explanation;
 - wrong inputs (missing file, wrong file type, wrong gate name) give a clear message instead of a crash;
 - made-up or unsafe addresses give "404 not found".

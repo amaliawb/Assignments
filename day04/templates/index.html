@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card">
   <h1>1. Upload your data</h1>
-  <p>Three required files plus two optional ones (a reference atlas and a single-cell imaging export). The script's comments describe each format.
+  <p>Two required files plus three optional ones (scRNA-seq cells, a reference atlas and a single-cell imaging export). The script's comments describe each format.
      FACS and scRNA-seq do not have to come from the same samples: the sample sheet says, for every sample, which method measured it
      (column <code>{{ analysis.METHOD_COLUMN }}</code>: FACS or scRNA-seq). A pool of urine from several people is one FACS sample.</p>
   <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
@@ -10,8 +10,12 @@
       <input type="file" name="metadata" accept=".csv" required></label>
     <label>FlowJo export <code>{{ uploads.facs[0] }}</code>
       <input type="file" name="facs" accept=".xlsx" required></label>
-    <label>scRNA-seq cells <code>{{ uploads.seq[0] }}</code>
-      <input type="file" name="seq" accept=".csv" required></label>
+    <label>scRNA-seq cells <code>{{ uploads.seq[0] }}</code> <span class="muted">(optional)</span>
+      <input type="file" name="seq" accept=".csv"></label>
+    <p class="muted">Leave this empty to use the default Flex data
+       (<code>{{ analysis.DEFAULT_FLEX_H5AD }}</code>: 12 samples from 8 people). Its samples are added to your
+       sample sheet, with the conditions in the columns <code>condition</code> (healthy_control / donor / recipient)
+       and <code>timepoint</code>. Name the condition column of your FACS samples <code>condition</code> as well.</p>
     <label>Reference atlas <code>{{ uploads.atlas[0] }}</code> <span class="muted">(optional)</span>
       <input type="file" name="atlas" accept=".csv"></label>
     <p class="muted">The reference atlas is a single-cell dataset of urine with known cell types.

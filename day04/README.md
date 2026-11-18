@@ -32,7 +32,7 @@ For day04 I copied that program into this folder and added a web application bui
    Use a Python that has the packages listed under [How to use it](#how-to-use-it). On my Mac that's Anaconda: `/opt/anaconda3/bin/python -m flask --app app run --port 5050`.
 3. Wait until the terminal shows `Running on http://127.0.0.1:5050`.
 4. Open **http://127.0.0.1:5050** in your browser (Chrome, Safari, ...).
-5. Upload your three files (the sample sheet says which method measured each sample; plus, optionally, a reference atlas and a single-cell imaging export), or click **Use demo data** to try it with made-up data.
+5. Upload the sample sheet and the FlowJo export (the sample sheet says which method measured each sample). The scRNA-seq file is optional: leave it empty to use the default Flex data (see [Step 9](#step-9-the-real-flex-data-as-default)). A reference atlas and a single-cell imaging export are optional too. Or click **Use demo data** to try it with made-up data.
 6. When you are done, go back to the terminal and press **Ctrl+C** to stop the server.
 
 Keep the terminal open while you use the website. Closing it, or pressing Ctrl+C, switches the website off.
@@ -71,8 +71,8 @@ What the address **http://127.0.0.1:5050** means:
 | `explanations.py` | The help texts on the results page: the question each section answers, what each table column means, and how to read each plot. Edit the texts here without touching the code. |
 | `templates/` | The HTML pages: `base.html` (shared layout), `index.html` (upload), `setup.html` (choose conditions), `results.html` (tables and plots). |
 | `static/style.css` | The page styling, with light and dark mode. |
-| `test_app.py` | 20 automatic tests covering both the terminal program and the web app. |
-| `test_business_logic.py` | 77 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
+| `test_app.py` | 23 automatic tests covering both the terminal program and the web app. |
+| `test_business_logic.py` | 86 unit tests of the calculations (proportions, statistics, atlas, imaging), each on a tiny hand-made table with a known answer. |
 | `TESTS_README.md` | How the unit tests in `test_business_logic.py` were written and what each one checks. |
 | `.gitignore` | Keeps uploaded data and generated results out of git. |
 
@@ -326,11 +326,39 @@ The tests of the Flex people against the pool's value are still there. With 8 pe
   - the panel choice on the website.
 - The new plots were checked by eye.
 
+### Step 9: The real Flex data as default
+
+The website now uses the real Flex data when the scRNA-seq upload is left empty:
+`X:\Rotation_students\Amalia\1. data\results_v5_flex\data\v5\flex_v5_processed.h5ad` (60,296 cells, 12 samples from 8 people). Uploading a scRNA-seq file still overrides it.
+
+**What happens:**
+- **Reading the `.h5ad`:** the file is 4 GB, so it is never loaded whole. `read_h5ad_cells(...)` reads only the per-cell columns that are needed and the four marker genes (PTPRC, MME, ANPEP, EPCAM, layer `log1p_cp10k`) out of the sparse matrix. This takes about 20 seconds.
+- **Cache:** the result is saved in `day04/default_flex/` and reused, so later runs start at once. The cache is rebuilt when the `.h5ad` changes, and is used alone when the X: drive is not connected. The folder is in `.gitignore`: the patient data never goes to GitHub.
+- **Sample sheet:** if your sample sheet has no scRNA-seq rows, the 12 Flex samples are added to it, with `donor_id` (= `patient_id`) and two condition columns: `condition` (healthy_control / donor / recipient) and `timepoint` (control, T00, T07, T30). **Name the condition column of your FACS samples `condition` too**, so both methods can be chosen from one column. If your sheet already lists scRNA-seq samples, they are used as written.
+- The setup and results pages say whether the scRNA-seq data was uploaded or the default.
+- **Clearer setup page.** The "condition column" is now explained: it is the column of the sample sheet that says which group each sample belongs to. Each possible column is shown with a short explanation and its values for each method (e.g. `condition` → scRNA-seq: healthy_control, donor, recipient · FACS: Healthy pool, Disease). Barcode, file and ID columns such as `flex_probe_barcode` are no longer offered. A column that only one method has values in (e.g. `timepoint`) is greyed out. The explanations live in `CONDITION_COLUMN_HELP` and `CONDITION_VALUE_HELP` in SETTINGS.
+
+**Flex labels → FACS gates.** The Flex annotation (`leiden_atlas`, e.g. `6: myeloid`) is coarser than the FACS gates: there is no "neutrophil" label. I assigned each cluster by its marker genes (mean log1p CP10k):
+
+| Flex cluster | Marker genes | FACS population |
+|---|---|---|
+| 6, 7, 8, 10, 11 `myeloid` | CSF3R, FCGR3B, CXCR2 high | Neutrophils |
+| 5, 9 `myeloid` | CD68, C1QA, CD163, LYZ high | Other immune |
+| 4 `T_NK`, 12 `B_plasma` | CD3E / MS4A1 | Other immune |
+| 3 `ascending_thick_LOH_kidney ?` | some EPCAM | EpCAM-high epithelium |
+| 0, 1, 2 `epithelium_prostate_urethra ?` | KRT13, S100A8; **no** EPCAM, MME or ANPEP | EpCAM-low (CD45 + EpCAM) / Other CD45⁻ (4-marker panel) |
+
+Clusters 0–2 look like squamous cells (KRT13), which are EpCAM-negative, so on FACS they would land in the CD45⁻ EpCAM-low gate. There is no proximal tubule cluster in the Flex data, so with the 4-marker panel the Flex "Proximal tubule" proportion is 0. Cluster numbers change if the notebook is re-clustered: then check the labels in `PANELS` again.
+
+**How it was checked:**
+- A full run with the real Flex data and the demo FACS files, with both panels: all 60,296 cells were assigned to a population, and the 12 samples were combined into 8 people.
+- 10 new tests (on a tiny made-up `.h5ad`): the right genes are read from the sparse matrix; a missing gene, layer or file gives a clear message; the cache is used when the drive is missing; the Flex samples are added only to a sheet without scRNA-seq rows; an uploaded file is never replaced; every Flex cluster is in exactly one population; and a full website run without a scRNA-seq upload.
+
 ---
 
 ## How to use it
 
-Requirements: Python with `pandas`, `numpy`, `scipy`, `matplotlib`, `openpyxl` and `flask`. Anaconda has all of them. On my Mac I use `/opt/anaconda3/bin/python`, because the system `python3` doesn't have pandas.
+Requirements: Python with `pandas`, `numpy`, `scipy`, `matplotlib`, `openpyxl` and `flask`, plus `anndata` for the default Flex data (`requirements.txt` lists them). Anaconda has all of them. On my Mac I use `/opt/anaconda3/bin/python`, because the system `python3` doesn't have pandas.
 
 **Web interface:** see [Open the website (quick start)](#open-the-website-quick-start) at the top. In short:
 ```bash
@@ -377,7 +405,7 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
    POOL1,FACS,healthy_pool.fcs,,Healthy pool
    ```
 2. **FlowJo export `.xlsx`:** one row per FACS sample, with the gates of the chosen panel, with the count of each population gate and the median of each marker and imaging feature in each population.
-3. **`scrnaseq_cells.csv`:** one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy.
+3. **`scrnaseq_cells.csv` (optional on the website):** without it, the default Flex data is used (see Step 9). Otherwise: one row per cell, with `cell_barcode, sample_id, cell_type, PTPRC, MME, ANPEP, EPCAM` (log-normalized). The script's header comment has a snippet to export this from Scanpy.
 4. **`reference_atlas.csv` (optional, new in day04):** a reference single-cell atlas of urine. Either:
    - one row per cell, with `cell_type`, an optional `donor_id` and optional `PTPRC, MME, ANPEP, EPCAM` columns;
    - or one row per cell type (× donor), with `cell_type`, an optional `donor_id` and `n_cells`.
@@ -389,10 +417,11 @@ python -m pytest test_business_logic.py -v   # unit tests of the calculations (s
 
 ## Limitations and notes
 
-- **Placeholder settings:** I don't have real data yet. The channel names (`FLUOR1`–`4`), gate paths, imaging feature names and atlas labels are placeholders. Everything has only been tested on the made-up demo data.
+- **Placeholder settings:** I don't have real FACS data yet. The channel names (`FLUOR1`–`4`), gate paths, imaging feature names and atlas labels are placeholders. The Flex side has been run on the real data (Step 9); the FACS side only on the made-up demo data.
 - **Comparing with an atlas:** an atlas is made with other protocols and is usually from healthy people. Small differences from it are expected, and differences in a disease condition can be biology rather than an error. The marker heatmap (E3) only compares patterns (which population is high or low), not absolute levels.
 - **Imaging and outliers:** the S8 imaging features describe morphology, not physiology. An outlier is a reason to look at the images of that sample or those cells, not an automatic reason to exclude them. With few samples, the imaging vs marker correlations (F5) are uncertain, so only strong, significant ones should be trusted.
 - **Local use only:** the web app is meant to run on my own computer. It has no login, and runs are kept in `runs/` until I delete them.
 - **Sample size:** with fewer than 3 samples in a group, that test is skipped. With only 3 per group, a Mann–Whitney test can't reach p < 0.05, so I should aim for at least 5 samples per condition. Against a single FACS pool, at least 6 scRNA-seq samples are needed before p < 0.05 is even possible.
 - **Different samples per method:** a difference between FACS and scRNA-seq can come from the method or from the different people measured (see Step 7).
-- **Placeholder gates and labels:** the SSC-high/low and EpCAM-high/low gate names and the Flex labels per panel are placeholders. Copy the real names from FlowJo and your notebook into `PANELS` in SETTINGS. Squamous epithelial cells aren't assigned to a gate yet: add their label where they fall in your data.
+- **Placeholder gates and labels:** the SSC-high/low and EpCAM-high/low gate names are placeholders: copy the real names from FlowJo into `PANELS` in SETTINGS. The Flex cluster labels are real (Step 9), but they were assigned to gates from marker genes, not from sorted cells.
+- **Default Flex data:** the terminal program does not use it; there, put `scrnaseq_cells.csv` in `day04/data/` (the cached `day04/default_flex/flex_cells.csv` can be copied).

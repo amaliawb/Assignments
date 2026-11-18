@@ -891,3 +891,144 @@ def test_cell_level_summary_percent_outlier_cells():
     assert first.loc["s2", "pct_outlier_cells"] == pytest.approx(0)
     # Middle 90% of s2's cells: between the 5th and 95th percentile of 100..104
     assert first.loc["s2", "p5"] == pytest.approx(np.percentile([100 + i % 5 for i in range(10)], 5))
+
+
+# =============================================================================
+# 5. THE DEFAULT FLEX DATA (.h5ad -> cells table + sample sheet)
+# =============================================================================
+
+GENES = [m["gene"] for m in analysis.ALL_MARKERS.values()]     # PTPRC, MME, ANPEP, EPCAM
+
+
+def write_fake_h5ad(path, cells, extra_genes=("GAPDH", "ACTB")):
+    """
+    Write a tiny .h5ad like the real Flex file. cells = a table with one row per
+    cell: sample_id, leiden_atlas, patient_id, role, timepoint and one column per
+    marker gene. Two extra genes are added (with values) so the reader must pick
+    the right columns out of the sparse matrix.
+    """
+    anndata = pytest.importorskip("anndata")
+    from scipy import sparse
+    genes = [*extra_genes[:1], *GENES, *extra_genes[1:]]          # marker genes in the middle
+    values = np.column_stack([np.full(len(cells), 9.0) if g in extra_genes else cells[g].to_numpy(float)
+                              for g in genes])
+    obs = cells[[S, "leiden_atlas", "patient_id", "role", "timepoint"]].astype("category")
+    obs.index = [f"cell{i}" for i in range(len(cells))]
+    adata = anndata.AnnData(X=sparse.csr_matrix(values * 0 + 1), obs=obs,
+                            var=pd.DataFrame(index=genes))
+    adata.layers["log1p_cp10k"] = sparse.csr_matrix(values)
+    adata.write_h5ad(path)
+    return path
+
+
+def fake_flex_cells():
+    """5 cells: sample A (person P1, healthy) and samples B1, B2 (both person P2, recipient)."""
+    return pd.DataFrame({
+        S: ["A", "A", "B1", "B1", "B2"],
+        "leiden_atlas": ["4: T_NK", "6: myeloid", "6: myeloid", "3: ascending_thick_LOH_kidney ?", "6: myeloid"],
+        "patient_id": ["P1", "P1", "P2", "P2", "P2"],
+        "role": ["healthy_control", "healthy_control", "recipient", "recipient", "recipient"],
+        "timepoint": ["control", "control", "T00", "T00", "T07"],
+        "PTPRC": [2.0, 1.5, 0.0, 0.0, 3.0],
+        "MME": [0.0, 0.0, 0.5, 0.0, 0.0],
+        "ANPEP": [0.0, 0.25, 0.0, 0.0, 0.0],
+        "EPCAM": [0.0, 0.0, 0.0, 1.75, 0.0],
+    })
+
+
+@pytest.fixture
+def fake_flex(tmp_path, monkeypatch):
+    """Point the default Flex settings at a tiny fake .h5ad and a temporary cache folder."""
+    source = write_fake_h5ad(tmp_path / "flex.h5ad", fake_flex_cells())
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_H5AD", source)
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_CACHE_DIR", tmp_path / "cache")
+    return source
+
+
+def test_read_h5ad_cells_takes_the_right_genes_from_the_sparse_matrix(fake_flex):
+    table = analysis.read_h5ad_cells(fake_flex, GENES, "log1p_cp10k", [S, "leiden_atlas"])
+    expected = fake_flex_cells()
+    assert list(table[S]) == list(expected[S])
+    for gene in GENES:            # the values of each marker gene, not of the extra genes (9.0)
+        assert table[gene].tolist() == pytest.approx(expected[gene].tolist())
+
+
+def test_read_h5ad_cells_reports_a_missing_gene_or_layer(fake_flex):
+    with pytest.raises(SystemExit, match="NOTAGENE"):
+        analysis.read_h5ad_cells(fake_flex, ["NOTAGENE"], "log1p_cp10k", [S])
+    with pytest.raises(SystemExit, match="no layer 'counts'"):
+        analysis.read_h5ad_cells(fake_flex, GENES, "counts", [S])
+
+
+def test_default_flex_tables_make_one_sheet_row_per_sample(fake_flex):
+    cells, sheet = analysis.default_flex_tables()
+    assert list(cells.columns) == [S, analysis.CELL_TYPE_COLUMN, *GENES]
+    assert len(cells) == 5
+    sheet = sheet.set_index(S)
+    assert list(sheet.index) == ["A", "B1", "B2"]
+    assert set(sheet[analysis.METHOD_COLUMN]) == {"scRNA-seq"}
+    # B1 and B2 come from the same person, so they are combined later
+    assert sheet.loc["B1", analysis.DONOR_COLUMN] == sheet.loc["B2", analysis.DONOR_COLUMN] == "P2"
+    assert sheet.loc["A", "condition"] == "healthy_control" and sheet.loc["B2", "timepoint"] == "T07"
+
+
+def test_default_flex_cache_is_used_when_the_drive_is_missing(fake_flex, tmp_path, monkeypatch):
+    analysis.default_flex_tables()                                   # builds the cache
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_H5AD", tmp_path / "not_connected.h5ad")
+    cells, sheet = analysis.default_flex_tables()                    # from the cache only
+    assert len(cells) == 5 and len(sheet) == 3
+    # no cache and no file: a clear message
+    monkeypatch.setattr(analysis, "DEFAULT_FLEX_CACHE_DIR", tmp_path / "empty_cache")
+    with pytest.raises(SystemExit, match="default Flex data was not found"):
+        analysis.default_flex_tables()
+
+
+def test_add_default_flex_adds_the_flex_samples_to_a_facs_only_sheet(fake_flex, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    pd.DataFrame({S: ["POOL"], "method": ["FACS"], "facs_name": ["pool.fcs"],
+                  "condition": ["Healthy pool"]}).to_csv(data / analysis.METADATA_FILE, index=False)
+    assert analysis.add_default_flex(data) is True
+    metadata = analysis.load_metadata(data / analysis.METADATA_FILE)
+    assert len(analysis.samples_of(metadata, "FACS")) == 1
+    assert sorted(analysis.samples_of(metadata, "scRNA-seq")[S]) == ["A", "B1", "B2"]
+    assert len(pd.read_csv(data / analysis.SEQ_FILE)) == 5
+
+
+def test_add_default_flex_keeps_your_own_scrnaseq_rows_and_files(fake_flex, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    sheet = pd.DataFrame({S: ["POOL", "A"], "method": ["FACS", "Flex"], "facs_name": ["pool.fcs", None],
+                          "condition": ["Healthy pool", "my own label"]})
+    sheet.to_csv(data / analysis.METADATA_FILE, index=False)
+    # The sheet already lists scRNA-seq samples: they are used as written, nothing is added
+    assert analysis.add_default_flex(data) is True
+    metadata = analysis.load_metadata(data / analysis.METADATA_FILE)
+    assert list(analysis.samples_of(metadata, "scRNA-seq")["condition"]) == ["my own label"]
+    # An uploaded scRNA-seq file is never replaced
+    (data / analysis.SEQ_FILE).write_text("my own file")
+    assert analysis.add_default_flex(data) is False
+    assert (data / analysis.SEQ_FILE).read_text() == "my own file"
+
+
+@pytest.mark.parametrize("panel", list(analysis.PANELS))
+def test_every_flex_cluster_label_is_in_exactly_one_population(panel):
+    analysis.use_panel(panel)
+    flex_labels = ["0: epithelium_prostate_urethra ?", "1: epithelium_prostate_urethra ?",
+                   "2: epithelium_prostate_urethra ?", "3: ascending_thick_LOH_kidney ?", "4: T_NK",
+                   "5: myeloid", "6: myeloid", "7: myeloid", "8: myeloid", "9: myeloid", "10: myeloid",
+                   "11: myeloid ?", "12: B_plasma"]
+    for label in flex_labels:
+        homes = [name for name, info in analysis.POPULATIONS.items() if label in info["seq_labels"]]
+        assert len(homes) == 1, (label, homes)
+    # Neutrophil clusters (CSF3R/FCGR3B high) are neutrophils; macrophage clusters are other immune
+    assert "6: myeloid" in analysis.POPULATIONS["Neutrophils"]["seq_labels"]
+    assert "9: myeloid" in analysis.POPULATIONS["Other immune"]["seq_labels"]
+
+
+def test_condition_candidates_leave_out_ids_barcodes_and_empty_columns():
+    metadata = pd.DataFrame({S: ["a", "b"], "method": ["FACS", "scRNA-seq"], "facs_name": ["a.fcs", None],
+                             "donor_id": ["P1", "P2"], "condition": ["Healthy pool", "Disease"],
+                             "flex_probe_barcode": [None, "BC001"], "raw_file": ["x", "y"],
+                             "batch_id": ["1", "2"], "notes": [None, None], "timepoint": [None, "T00"]})
+    assert analysis.condition_candidates(metadata) == ["condition", "timepoint"]

@@ -8,3 +8,4 @@ numpy>=1.24       # maths on lists of numbers
 scipy>=1.10       # statistical tests (Mann-Whitney, Spearman, ...)
 matplotlib>=3.7   # plots
 openpyxl>=3.1     # lets pandas read and write Excel (.xlsx) files
+anndata>=0.10     # reads the default Flex data (.h5ad); brings h5py with it

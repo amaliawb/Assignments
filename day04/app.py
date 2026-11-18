@@ -6,9 +6,10 @@ Web interface for facs_vs_scrnaseq.py.
 
 All the "business logic" (loading the files, building the tables, the
 statistics and the plots) stays in facs_vs_scrnaseq.py. This file only:
-  1. receives the three input files (+ the optional reference atlas and per-cell
-     imaging export) through an
-     upload form (or makes demo data)
+  1. receives the input files through an upload form (or makes demo data):
+     the sample sheet and FlowJo export, plus the optional scRNA-seq file
+     (left empty = the default Flex data from DEFAULT_FLEX_H5AD), reference
+     atlas and per-cell imaging export
   2. lets you pick the FACS panel (which antibodies were used), the condition
      column, and the conditions to include for the
      scRNA-seq samples and for the FACS samples, with checkboxes (instead of
@@ -68,9 +69,12 @@ UPLOADS = {
     "atlas": (analysis.ATLAS_FILE, ".csv"),
     "facs_cells": (analysis.FACS_CELLS_FILE, ".csv"),
 }
-# Upload fields that may be left empty: without an atlas, section E is skipped;
-# without the per-cell imaging export, the cell-level plots of section F are skipped
-OPTIONAL_UPLOADS = {"atlas", "facs_cells"}
+# Upload fields that may be left empty: without a scRNA-seq file, the default Flex
+# data (DEFAULT_FLEX_H5AD in the analysis SETTINGS) is used; without an atlas,
+# section E is skipped; without the per-cell imaging export, the cell-level plots
+# of section F are skipped
+OPTIONAL_UPLOADS = {"seq", "atlas", "facs_cells"}
+SEQ_SOURCE_FILE = "seq_source.txt"    # in the run folder: where the scRNA-seq data came from
 
 # Headings for the plots and tables, by the letter their file name starts with
 SECTIONS = {
@@ -142,7 +146,13 @@ def condition_options(metadata):
             people = analysis.donor_of_each_row(samples, metadata).groupby(samples[column]).nunique()
             methods.append({"method": method, "field": field, "heading": heading,
                             "values": [(v, int(n), int(people[v])) for v, n in counts.items()]})
-        options.append({"column": column, "methods": methods})
+        # A column can only be used if BOTH methods have values in it (otherwise there is nothing to compare)
+        empty = [entry["method"] for entry in methods if not entry["values"]]
+        options.append({"column": column, "methods": methods, "usable": not empty,
+                        "missing_for": empty,
+                        "help": analysis.CONDITION_COLUMN_HELP.get(column, "A column of your sample sheet.")})
+    # Show the usable columns first, and "condition" first among them
+    options.sort(key=lambda o: (not o["usable"], o["column"] != "condition"))
     return options
 
 
@@ -152,6 +162,12 @@ def last_panel(folder):
         return json.loads((folder / "run.json").read_text())["panel"]
     except (OSError, KeyError, ValueError):
         return analysis.FACS_PANEL
+
+
+def seq_source(folder):
+    """Where the scRNA-seq data of a run came from (uploaded file, default Flex data, or demo)."""
+    path = folder / SEQ_SOURCE_FILE
+    return path.read_text(encoding="utf-8") if path.exists() else "demo data"
 
 
 def table_html(table, columns=None):
@@ -210,6 +226,16 @@ def upload():
                 return redirect(url_for("index"))
             file.save(data_dir / file_name)    # saved under the name the analysis expects
 
+        # No scRNA-seq file chosen: use the default Flex data (and add its samples to the sheet)
+        used_default, _, error = call_analysis(analysis.add_default_flex, data_dir)
+        if error:
+            shutil.rmtree(folder)
+            flash(error)
+            return redirect(url_for("index"))
+        source = (f"default Flex data ({Path(analysis.DEFAULT_FLEX_H5AD).name})" if used_default
+                  else "uploaded file")
+        (folder / SEQ_SOURCE_FILE).write_text(source, encoding="utf-8")
+
     _, _, error = call_analysis(analysis.load_metadata, data_dir / analysis.METADATA_FILE)
     if error:
         shutil.rmtree(folder)
@@ -230,7 +256,8 @@ def setup(run_id, error=None):
     n_samples = {method: len(analysis.samples_of(metadata, method)) for method in analysis.METHODS}
     return render_template("setup.html", run_id=run_id, options=options,
                            n_samples=n_samples, error=error,
-                           panels=analysis.PANELS, current_panel=last_panel(folder))
+                           panels=analysis.PANELS, current_panel=last_panel(folder),
+                           seq_source=seq_source(folder), value_help=analysis.CONDITION_VALUE_HELP)
 
 
 @app.post("/run/<run_id>/analyse")
@@ -248,6 +275,10 @@ def analyse(run_id):
     option = next((o for o in condition_options(metadata) if o["column"] == column), None)
     if option is None:
         return setup(run_id, error="Please choose a condition column."), 400
+    if not option["usable"]:
+        return setup(run_id, error=f"The column '{column}' has no values for the "
+                                   f"{' and '.join(option['missing_for'])} samples, so there is nothing to compare. "
+                                   "Choose another column."), 400
     # The ticked conditions of each method; nothing ticked = all conditions of that
     # method (like pressing Enter in the terminal)
     chosen = {}
@@ -271,6 +302,7 @@ def analyse(run_id):
         "n_cells": int(result["n_cells"]),
         "n_seq_samples": int(result["n_seq_samples"]),
         "n_seq_people": int(result["n_seq_people"]),
+        "seq_source": seq_source(folder),
         "log": log,
     }, indent=2))
     return redirect(url_for("results", run_id=run_id))

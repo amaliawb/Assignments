@@ -10,7 +10,7 @@ python -m pytest test_business_logic.py -v      # only the business-logic tests 
 python -m pytest -v                             # all tests: these + test_app.py (~1.5 minutes)
 ```
 
-All **77 tests pass**, along with the 20 tests in `test_app.py` (97 in total).
+All **86 tests pass**, along with the 23 tests in `test_app.py` (109 in total).
 
 ---
 
@@ -200,6 +200,21 @@ The first five tests run once for **each FACS panel** (CD45 + EpCAM, and CD45 + 
 | `test_imaging_marker_correlation_finds_a_perfect_relation` | An imaging feature that rises exactly with a marker's intensity gives Spearman r = 1. |
 | `test_cell_outlier_flags_only_the_giant_cell` | Among normal cells, one cell 10× larger is the only one flagged. |
 | `test_cell_level_summary_percent_outlier_cells` | 1 odd cell out of 10 gives 10% outlier cells in that sample and 0% in the other. The cell counts and percentiles are also checked. |
+
+### 5. The default Flex data
+
+These tests write a tiny made-up `.h5ad` (5 cells, the four marker genes plus two other genes with the value 9) and point the default Flex settings at it, so they never touch the real file on the X: drive.
+
+| Test | What it checks |
+|---|---|
+| `test_read_h5ad_cells_takes_the_right_genes_from_the_sparse_matrix` | The values read for PTPRC, MME, ANPEP and EPCAM are exactly the ones written, not those of the other genes (9). |
+| `test_read_h5ad_cells_reports_a_missing_gene_or_layer` | A gene or layer that isn't in the file gives a clear message. |
+| `test_default_flex_tables_make_one_sheet_row_per_sample` | 5 cells from 3 samples give 3 sample-sheet rows, all scRNA-seq. B1 and B2 belong to the same person (P2), and the condition and timepoint are copied. |
+| `test_default_flex_cache_is_used_when_the_drive_is_missing` | After the first read, the cache is used even when the `.h5ad` can't be reached. Without cache and file, the message says the default Flex data was not found. |
+| `test_add_default_flex_adds_the_flex_samples_to_a_facs_only_sheet` | A sheet with only a FACS pool gets the 3 Flex samples added, and the cells file is written. |
+| `test_add_default_flex_keeps_your_own_scrnaseq_rows_and_files` | A sheet that already lists scRNA-seq samples is used as written, and an uploaded scRNA-seq file is never replaced. |
+| `test_condition_candidates_leave_out_ids_barcodes_and_empty_columns` | Only real group columns (`condition`, `timepoint`) are offered as the condition column: not `flex_probe_barcode`, a file or ID column, or a column without values. |
+| `test_every_flex_cluster_label_is_in_exactly_one_population` | (Runs for each panel.) Each of the 13 real Flex cluster labels is in exactly one population; neutrophil cluster 6 is a neutrophil, macrophage cluster 9 is other immune. |
 
 ---
 
