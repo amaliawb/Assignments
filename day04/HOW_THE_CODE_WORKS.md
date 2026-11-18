@@ -394,6 +394,7 @@ The tests are small programs that use the code and check the answers, like contr
 - choosing only one condition per method skips the condition plot instead of failing;
 - the terminal command still works;
 - the website goes from upload → conditions → results → zip download;
+- the FACS panel chosen on the website is used for the analysis, shown on the results page, and stays selected when you re-run;
 - every section and plot on the results page has its explanation;
 - wrong inputs (missing file, wrong file type, wrong gate name) give a clear message instead of a crash;
 - made-up or unsafe addresses give "404 not found".

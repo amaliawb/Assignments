@@ -419,7 +419,7 @@ OUTLIER_CUTOFF = 3.5
 
 # ---- Analysis options -----------------------------------------------------------
 # How proportions are calculated (same rule for FACS and scRNA-seq):
-#   "populations" : population / (sum of the four populations)    <- recommended
+#   "populations" : population / (sum of all populations of the panel)    <- recommended
 #                   both methods then share the same denominator, which removes
 #                   differences caused by debris, dead cells, unlabelled cells, etc.
 #   "total"       : FACS -> population / FACS_TOTAL_GATE count
@@ -708,7 +708,7 @@ def build_proportions(facs, cells, metadata, condition_column):
 
     # Choose what each count is divided by (see PROPORTION_DENOMINATOR in SETTINGS)
     if PROPORTION_DENOMINATOR == "populations":
-        # sum of the four populations, per sample (= all live cells for FACS)
+        # sum of all populations of the panel, per sample (= all live cells for FACS)
         facs_total = facs_counts[populations].sum(axis=1)
         seq_total = seq_counts[populations].sum(axis=1)
     elif PROPORTION_DENOMINATOR == "total":
@@ -1168,7 +1168,7 @@ def protein_rna_stats(protein_rna):
 
 
 def imaging_between_populations(imaging):
-    """Section D: do the imaging features differ between the four populations?"""
+    """Section D: do the imaging features differ between the populations?"""
     rows = []
     for feature, part in imaging.groupby("feature", sort=False):
         # For this feature, collect the values of each population

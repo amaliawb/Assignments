@@ -30,7 +30,7 @@ The rest is "plumbing": drawing the plots, the website, and saving files. That p
 | | `test_app.py` (already existed) | `test_business_logic.py` (new) |
 |---|---|---|
 | **What it checks** | The whole program and the website, from the outside | One function at a time, from the inside |
-| **Input** | The demo data (10 samples, thousands of cells) | Tiny tables made by hand inside each test |
+| **Input** | The demo data (12 Flex samples from 8 people, 7 FACS samples, thousands of cells) | Tiny tables made by hand inside each test |
 | **Question it answers** | "Does everything run, and do all 40 result files appear?" | "Is this number **correct**?" |
 | **Speed** | About 1.5 minutes | About 5 seconds |
 | **Lab analogy** | Running the whole protocol on a control sample | Checking each reagent and each machine separately |
@@ -45,7 +45,7 @@ The rest is "plumbing": drawing the plots, the website, and saving files. That p
 
 Each test follows the same three steps (often called **Arrange – Act – Assert**):
 
-1. **Arrange:** build a tiny input table where the right answer can be worked out by hand. Example: a sample with 10, 20, 30 and 40 cells in the four populations.
+1. **Arrange:** build a tiny input table where the right answer can be worked out by hand. Example: a sample with 10, 20, 30, 40, ... cells in the populations.
 2. **Act:** call one function of the program on it, for example `build_proportions(...)`.
 3. **Assert:** compare the result with the answer worked out by hand. Here that is 0.1, 0.2, 0.3 and 0.4. `assert` means "this must be true, otherwise the test fails."
 
@@ -70,7 +70,7 @@ facs = make_facs({"s1": [10, 20, 30, 40]})     # FlowJo counts for one sample
 
 ### 4. The tests read the names from SETTINGS
 
-The tests don't type population names like `"Immune"` themselves. They read them from the `POPULATIONS`, `MARKERS` and `IMAGING_FEATURES` settings of the program. So if you rename a population, change a gate path or add an imaging feature, the tests still work. If `IMAGING_FEATURES` is empty, the imaging tests are **skipped** (shown as "s"), not failed.
+The tests don't type population names like `"Neutrophils"` themselves. They read them from the `POPULATIONS`, `MARKERS` and `IMAGING_FEATURES` settings of the program (for the default FACS panel; the gating checks run for every panel). So if you rename a population, change a gate path or add an imaging feature, the tests still work. If `IMAGING_FEATURES` is empty, the imaging tests are **skipped** (shown as "s"), not failed.
 
 ### 5. Nothing on disk is changed
 
